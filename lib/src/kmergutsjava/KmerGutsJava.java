@@ -17,6 +17,11 @@ import java.util.Map;
 import java.util.StringTokenizer;
 import java.util.zip.GZIPInputStream;
 
+import us.kbase.common.service.UObject;
+
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 /*
 
 kmer_guts.c can be compiled into either a 5-mer or an 8-mer version.  I have 
@@ -189,12 +194,12 @@ public class KmerGutsJava {
     };
 
 
-    public static class sig_kmer {
-        long which_kmer;
-        int  otu_index;
-        int  avg_from_end;
-        int  function_index;
-        float function_wt;
+    public static class SigKmer implements Serializable {
+        public long whichKmer;
+        public int  otuIndex;
+        public int  avgFromEnd;
+        public int  functionIndex;
+        public float functionWt;
     } // sig_kmer_t;
 
     public static final int VERSION = 1;
@@ -206,7 +211,7 @@ public class KmerGutsJava {
     } // kmer_memory_image_t;
 
     public static class kmer_handle {
-        sig_kmer[] kmer_table;
+        SigKmer[] kmer_table;
         long num_sigs;
         String[] function_array;   /* indexed by fI */
         String[] otu_array;        /* OTU indexes point at a representation of multiple OTUs */
@@ -1019,7 +1024,24 @@ public class KmerGutsJava {
             System.err.println("Usage: <program> <kmer-table> <contigs-fasta>");
             System.exit(1);
         }
-        FastaReader fr = new FastaReader(new File(args[1]));
+        try {
+            List<QueryKmer> hits = lookup(args[0], args[1]);
+        } catch (Exception ex) {
+            System.err.println("Error: " + ex.getMessage());
+        }
+        List<QueryKmer> hits = UObject.getMapper().readValue(new File("/kb/module/work/hits.json"), 
+                new TypeReference<List<QueryKmer>>() {});
+        int count = 0;
+        for (QueryKmer qk : hits) {
+            if (qk.hit != null) {
+                count++;
+            }
+        }
+        System.out.println("Kmers found: " + count);
+    }
+    
+    private static List<QueryKmer> lookup(String kmerTableFilePath, String contigsPath) throws Exception {
+        FastaReader fr = new FastaReader(new File(contigsPath));
         Map<Long, QueryKmer> queryMap = new HashMap<Long, QueryKmer>();
         while (true) {
             String[] entry = fr.read();
@@ -1049,7 +1071,7 @@ public class KmerGutsJava {
         }
         List<QueryKmer> values = new ArrayList<QueryKmer>(queryMap.values());
         System.out.println("Value count: " + values.size());
-        File kmerTableFile = new File(args[0]);
+        File kmerTableFile = new File(kmerTableFilePath);
         InputStream is;
         if (kmerTableFile.getName().endsWith(".gz")) {
             is = new BufferedInputStream(new GZIPInputStream(new BufferedInputStream(new FileInputStream(kmerTableFile))));
@@ -1126,40 +1148,47 @@ public class KmerGutsJava {
                 int avgFromEnd = readIntLE(is);
                 int functionIndex = readIntLE(is);
                 float functionWt = readFloatLE(is);
-                long slot = whichKmer % numSigs;
                 if (whichKmer > MAX_ENCODED) {
                     inProgress.clear();
                 } else {
                     if (inProgress.containsKey(whichKmer)) {
                         QueryKmer qk = inProgress.remove(whichKmer);
+                        //long slot = whichKmer % numSigs;
                         //System.out.println("[" + curHashCode + "] whichKmer=" + whichKmer + " (" + slot + "), otuIndex=" + otuIndex + ", " +
                         //        "avgFromEnd=" + avgFromEnd + ", functionIndex=" + functionIndex + ", " +
                         //        "functionWt=" + functionWt);
-                        sig_kmer hit = new sig_kmer();
-                        hit.which_kmer = whichKmer;
-                        hit.otu_index = otuIndex;
-                        hit.avg_from_end = avgFromEnd;
-                        hit.function_index = functionIndex;
-                        hit.function_wt = functionWt;
+                        SigKmer hit = new SigKmer();
+                        hit.whichKmer = whichKmer;
+                        hit.otuIndex = otuIndex;
+                        hit.avgFromEnd = avgFromEnd;
+                        hit.functionIndex = functionIndex;
+                        hit.functionWt = functionWt;
                         qk.hit = hit;
                         kmersFound++;
                     }
                 }
                 curHashCode++;
-                int newFraction = (int)(10000.0 * ((double)curHashCode / (double)numSigs));
+                int newFraction = (int)(100.0 * ((double)curHashCode / (double)numSigs));
                 if (newFraction != fraction) {
                     fraction = newFraction;
-                    System.out.println("Processed: " + (fraction / 100.0) + "%, time=" +
+                    System.out.println("Processed: " + (fraction) + "%, time=" +
                             (System.currentTimeMillis() - t1) + " ms., found-so-far=" + 
                             kmersFound);
                 }
             }
-            System.out.println("curQueryPos=" + curQueryPos + " (size=" + values.size() + "), n=" + curHashCode);
         } finally {
             is.close();
+            List<QueryKmer> hits = new ArrayList<QueryKmer>();
+            for (QueryKmer qk : values) {
+                if (qk.hit != null) {
+                    hits.add(qk);
+                }
+            }
             System.out.println("Kmers found: " + kmersFound);
             System.out.println("Time: " + (System.currentTimeMillis() - t1) + " ms.");
+            UObject.getMapper().writeValue(new File("/kb/module/work/hits.json"), hits);
         }
+        return values;
     }
 
     /*public static void main(String[] args) throws Exception {
@@ -1426,15 +1455,15 @@ public class KmerGutsJava {
         }
     }
     
-    public static class QueryKmer {
-        long value;
-        long hashCode;
-        List<QueryPos> posList;
-        sig_kmer hit;
+    public static class QueryKmer implements Serializable {
+        public long value;
+        public long hashCode;
+        public List<QueryPos> posList;
+        public SigKmer hit;
     }
     
-    public static class QueryPos {
-        String queryId;
-        int pos;
+    public static class QueryPos implements Serializable {
+        public String queryId;
+        public int pos;
     }
 }
