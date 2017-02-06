@@ -75,6 +75,6 @@ public class KmerGutsJavaServerTest {
     
     @Test
     public void testYourMethod() throws Exception {
-        KmerGutsJava.main(new String[] {"/data/kmer.table.mem_map", "/kb/module/test/data/kmer_test.fna"});
+        KmerGutsJava.main(new String[] {"/data/kmer.table.mem_map.gz", "/kb/module/test/data/kmer_test.fna"});
     }
 }

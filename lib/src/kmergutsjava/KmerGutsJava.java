@@ -15,6 +15,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.StringTokenizer;
+import java.util.zip.GZIPInputStream;
 
 /*
 
@@ -1048,7 +1049,13 @@ public class KmerGutsJava {
         }
         List<QueryKmer> values = new ArrayList<QueryKmer>(queryMap.values());
         System.out.println("Value count: " + values.size());
-        InputStream is = new BufferedInputStream(new FileInputStream(new File(args[0])));
+        File kmerTableFile = new File(args[0]);
+        InputStream is;
+        if (kmerTableFile.getName().endsWith(".gz")) {
+            is = new BufferedInputStream(new GZIPInputStream(new BufferedInputStream(new FileInputStream(kmerTableFile))));
+        } else {
+            is = new BufferedInputStream(new FileInputStream(kmerTableFile));
+        }
         long t1 = System.currentTimeMillis();
         int kmersFound = 0;
         try {
@@ -1093,7 +1100,7 @@ public class KmerGutsJava {
                     long bytesToSkip = entrySize * (long)(neededHashCode - curHashCode);
                     if (bytesToSkip > 0) {
                         long bytesLeft = bytesToSkip;
-                        while (bytesLeft > 0) {
+                        for (int iter = 0; bytesLeft > 0 && iter < 100; iter++) {
                             long ret = is.skip(bytesLeft);
                             if (ret < 0)
                                 break;
@@ -1267,14 +1274,24 @@ public class KmerGutsJava {
     }
 
     public static long readLongLE(InputStream is) throws IOException {
-        return (((long)(is.read() & 255) << 0) +
-                ((long)(is.read() & 255) << 8) +
-                ((long)(is.read() & 255) << 16) +
-                ((long)(is.read() & 255) << 24) +
-                ((long)(is.read() & 255) << 32) +
-                ((long)(is.read() & 255) << 40) +
-                ((long)(is.read() & 255) << 48) +
-                ((long)is.read() << 56));
+        int ch1 = is.read();
+        int ch2 = is.read();
+        int ch3 = is.read();
+        int ch4 = is.read();
+        int ch5 = is.read();
+        int ch6 = is.read();
+        int ch7 = is.read();
+        int ch8 = is.read();
+        if ((ch1 | ch2 | ch3 | ch4 | ch5 | ch6 | ch7 | ch8) < 0)
+            throw new EOFException();
+        return (((long)(ch1 & 255) << 0) +
+                ((long)(ch2 & 255) << 8) +
+                ((long)(ch3 & 255) << 16) +
+                ((long)(ch4 & 255) << 24) +
+                ((long)(ch5 & 255) << 32) +
+                ((long)(ch6 & 255) << 40) +
+                ((long)(ch7 & 255) << 48) +
+                ((long)ch8 << 56));
     }
 
     public static float readFloatLE(InputStream is) throws IOException {
