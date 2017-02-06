@@ -4,16 +4,14 @@ import java.io.File;
 import java.net.URL;
 import java.util.Arrays;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.Map;
-
-import junit.framework.Assert;
 
 import org.ini4j.Ini;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
+import kmergutsjava.KmerGutsJava;
 import kmergutsjava.KmerGutsJavaServer;
 import us.kbase.auth.AuthToken;
 import us.kbase.auth.AuthService;
@@ -21,9 +19,7 @@ import us.kbase.common.service.JsonServerSyslog;
 import us.kbase.common.service.RpcContext;
 import us.kbase.common.service.UObject;
 import us.kbase.workspace.CreateWorkspaceParams;
-import us.kbase.workspace.ObjectSaveData;
 import us.kbase.workspace.ProvenanceAction;
-import us.kbase.workspace.SaveObjectsParams;
 import us.kbase.workspace.WorkspaceClient;
 import us.kbase.workspace.WorkspaceIdentity;
 
@@ -43,7 +39,7 @@ public class KmerGutsJavaServerTest {
         Ini ini = new Ini(deploy);
         config = ini.get("KmerGutsJava");
         wsClient = new WorkspaceClient(new URL(config.get("workspace-url")), token);
-        wsClient.setAuthAllowedForHttp(true);
+        wsClient.setIsInsecureHttpConnectionAllowed(true);
         // These lines are necessary because we don't want to start linux syslog bridge service
         JsonServerSyslog.setStaticUseSyslog(false);
         JsonServerSyslog.setStaticMlogFile(new File(config.get("scratch"), "test.log").getAbsolutePath());
@@ -79,15 +75,6 @@ public class KmerGutsJavaServerTest {
     
     @Test
     public void testYourMethod() throws Exception {
-        // Prepare test objects in workspace if needed using 
-        // wsClient.saveObjects(new SaveObjectsParams().withWorkspace(getWsName()).withObjects(Arrays.asList(
-        //         new ObjectSaveData().withType("SomeModule.SomeType").withName(objName).withData(new UObject(obj)))));
-        //
-        // Run your method by
-        // YourRetType ret = impl.yourMethod(params, token);
-        //
-        // Check returned data with
-        // Assert.assertEquals(..., ret.getSomeProperty());
-        // ... or other JUnit methods.
+        KmerGutsJava.main(new String[] {"/data/kmer.table.mem_map", "/kb/module/test/data/kmer_test.fna"});
     }
 }

@@ -1,3 +1,5 @@
+package kmergutsjava;
+
 import java.io.BufferedInputStream;
 import java.io.EOFException;
 import java.io.File;
@@ -13,7 +15,6 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.StringTokenizer;
-import java.util.TreeMap;
 
 /*
 
@@ -1013,44 +1014,49 @@ public class KmerGutsJava {
     }*/
 
     public static void main(String[] args) throws Exception {
-        args = new String[] {"kmer.table.part", "kmer_test.fna"};
         if (args.length != 2) {
             System.err.println("Usage: <program> <kmer-table> <contigs-fasta>");
             System.exit(1);
         }
         FastaReader fr = new FastaReader(new File(args[1]));
-        String[] entry = fr.read();
-        char[] seq = entry[1].toCharArray();
-        int len = seq.length / 3 + 1;
-        char[] pseq = new char[len];
-        byte[] pIseq = new byte[len];
-        translate(seq, 0, pseq, pIseq);
         Map<Long, QueryKmer> queryMap = new HashMap<Long, QueryKmer>();
-        for (int i = 0; i < len - 10; i++) {
-            long value = encoded_kmer(pIseq, i);
-            if (value < 0)
-                continue;
-            QueryKmer qk = queryMap.get(value);
-            if (qk == null) {
-                qk = new QueryKmer();
-                qk.value = value;
-                qk.posList = new ArrayList<QueryPos>(1);
-                queryMap.put(value, qk);
+        while (true) {
+            String[] entry = fr.read();
+            if (entry == null)
+                break;
+            char[] seq = entry[1].toCharArray();
+            int len = seq.length / 3 + 1;
+            char[] pseq = new char[len];
+            byte[] pIseq = new byte[len];
+            translate(seq, 0, pseq, pIseq);
+            for (int i = 0; i < len - 10; i++) {
+                long value = encoded_kmer(pIseq, i);
+                if (value < 0)
+                    continue;
+                QueryKmer qk = queryMap.get(value);
+                if (qk == null) {
+                    qk = new QueryKmer();
+                    qk.value = value;
+                    qk.posList = new ArrayList<QueryPos>(1);
+                    queryMap.put(value, qk);
+                }
+                QueryPos qp = new QueryPos();
+                qp.queryId = entry[0];
+                qp.pos = i;
+                qk.posList.add(qp);
             }
-            QueryPos qp = new QueryPos();
-            qp.queryId = entry[0];
-            qp.pos = i;
-            qk.posList.add(qp);
         }
         List<QueryKmer> values = new ArrayList<QueryKmer>(queryMap.values());
         System.out.println("Value count: " + values.size());
         InputStream is = new BufferedInputStream(new FileInputStream(new File(args[0])));
         long t1 = System.currentTimeMillis();
+        int kmersFound = 0;
         try {
             long numSigs = readLongLE(is);
             long entrySize = readLongLE(is);
             long version = readLongLE(is);
-            
+            System.out.println("numSigs=" + numSigs + ", entrySize=" + entrySize + ", version=" + version);
+            // Update hash-codes in queries and sort them by these hash-codes
             for (QueryKmer qk : values) {
                 qk.hashCode = qk.value % numSigs;
             }
@@ -1064,26 +1070,27 @@ public class KmerGutsJava {
                     return ret;
                 }
             });
-            
-            System.out.println("numSigs=" + numSigs + ", entrySize=" + entrySize + ", version=" + version);
-            long n = 0;
+            // Now we go along hash table and along query hash-codes
+            long curHashCode = 0;
             int curQueryPos = 0;
-            List<QueryKmer> postponed = new ArrayList<QueryKmer>();
-            while ((curQueryPos < values.size() || postponed.size() > 0) && n < 4166200) {  //4166665) {
-                if (postponed.size() == 0) {
+            Map<Long, QueryKmer> inProgress = new HashMap<Long, QueryKmer>();
+            int fraction = 0;
+            while (curQueryPos < values.size() || inProgress.size() > 0) {
+                if (inProgress.size() == 0) {
                     QueryKmer qk = values.get(curQueryPos);
-                    postponed.add(qk);
+                    long neededHashCode = qk.hashCode;
+                    // Let's push all queries with the same 
+                    inProgress.put(qk.value, qk);
                     curQueryPos++;
-                    long neededN = qk.hashCode;
                     while (curQueryPos < values.size()) {
                         qk = values.get(curQueryPos);
-                        if (qk.hashCode != neededN) {
+                        if (qk.hashCode != neededHashCode) {
                             break;
                         }
-                        postponed.add(qk);
+                        inProgress.put(qk.value, qk);
                         curQueryPos++;
                     }
-                    long bytesToSkip = entrySize * (long)(neededN - n);
+                    long bytesToSkip = entrySize * (long)(neededHashCode - curHashCode);
                     if (bytesToSkip > 0) {
                         long bytesLeft = bytesToSkip;
                         while (bytesLeft > 0) {
@@ -1096,7 +1103,7 @@ public class KmerGutsJava {
                             throw new IllegalStateException("Error skipping " + bytesToSkip + " bytes");
                         }
                     }
-                    n = neededN;
+                    curHashCode = neededHashCode;
                 }
                 long whichKmer = readLongLE(is);
                 int otuIndex = readIntLE(is);
@@ -1105,30 +1112,37 @@ public class KmerGutsJava {
                 float functionWt = readFloatLE(is);
                 long slot = whichKmer % numSigs;
                 if (whichKmer > MAX_ENCODED) {
-                    postponed.clear();
+                    inProgress.clear();
                 } else {
-                    for (QueryKmer qk : postponed) {
-                        if (whichKmer == qk.value) {
-                            System.out.println("[" + n + "] whichKmer=" + whichKmer + " (" + slot + "), otuIndex=" + otuIndex + ", " +
-                                    "avgFromEnd=" + avgFromEnd + ", functionIndex=" + functionIndex + ", " +
-                                    "functionWt=" + functionWt);
-                            sig_kmer hit = new sig_kmer();
-                            hit.which_kmer = whichKmer;
-                            hit.otu_index = otuIndex;
-                            hit.avg_from_end = avgFromEnd;
-                            hit.function_index = functionIndex;
-                            hit.function_wt = functionWt;
-                            qk.hit = hit;
-                        }
+                    if (inProgress.containsKey(whichKmer)) {
+                        QueryKmer qk = inProgress.remove(whichKmer);
+                        System.out.println("[" + curHashCode + "] whichKmer=" + whichKmer + " (" + slot + "), otuIndex=" + otuIndex + ", " +
+                                "avgFromEnd=" + avgFromEnd + ", functionIndex=" + functionIndex + ", " +
+                                "functionWt=" + functionWt);
+                        sig_kmer hit = new sig_kmer();
+                        hit.which_kmer = whichKmer;
+                        hit.otu_index = otuIndex;
+                        hit.avg_from_end = avgFromEnd;
+                        hit.function_index = functionIndex;
+                        hit.function_wt = functionWt;
+                        qk.hit = hit;
+                        kmersFound++;
                     }
                 }
-                n++;
+                curHashCode++;
+                int newFraction = (int)(1000.0 * ((double)curHashCode / (double)numSigs));
+                if (newFraction != fraction) {
+                    fraction = newFraction;
+                    System.out.println("Processed: " + (fraction / 10.0) + "%, time=" +
+                            (System.currentTimeMillis() - t1) + " ms.");
+                }
             }
-            System.out.println("curQueryPos=" + curQueryPos + " (size=" + values.size() + "), n=" + n);
+            System.out.println("curQueryPos=" + curQueryPos + " (size=" + values.size() + "), n=" + curHashCode);
         } finally {
             is.close();
+            System.out.println("Kmers found: " + kmersFound);
+            System.out.println("Time: " + (System.currentTimeMillis() - t1) + " ms.");
         }
-        System.out.println("Time: " + (System.currentTimeMillis() - t1) + " ms.");
     }
 
     public static int readIntLE(InputStream is) throws IOException {
