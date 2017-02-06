@@ -1104,6 +1104,15 @@ public class KmerGutsJava {
                         }
                     }
                     curHashCode = neededHashCode;
+                } else {
+                    while (curQueryPos < values.size()) {
+                        QueryKmer qk = values.get(curQueryPos);
+                        if (qk.hashCode != curHashCode) {
+                            break;
+                        }
+                        inProgress.put(qk.value, qk);
+                        curQueryPos++;
+                    }
                 }
                 long whichKmer = readLongLE(is);
                 int otuIndex = readIntLE(is);
@@ -1116,9 +1125,9 @@ public class KmerGutsJava {
                 } else {
                     if (inProgress.containsKey(whichKmer)) {
                         QueryKmer qk = inProgress.remove(whichKmer);
-                        System.out.println("[" + curHashCode + "] whichKmer=" + whichKmer + " (" + slot + "), otuIndex=" + otuIndex + ", " +
-                                "avgFromEnd=" + avgFromEnd + ", functionIndex=" + functionIndex + ", " +
-                                "functionWt=" + functionWt);
+                        //System.out.println("[" + curHashCode + "] whichKmer=" + whichKmer + " (" + slot + "), otuIndex=" + otuIndex + ", " +
+                        //        "avgFromEnd=" + avgFromEnd + ", functionIndex=" + functionIndex + ", " +
+                        //        "functionWt=" + functionWt);
                         sig_kmer hit = new sig_kmer();
                         hit.which_kmer = whichKmer;
                         hit.otu_index = otuIndex;
@@ -1130,11 +1139,12 @@ public class KmerGutsJava {
                     }
                 }
                 curHashCode++;
-                int newFraction = (int)(1000.0 * ((double)curHashCode / (double)numSigs));
+                int newFraction = (int)(10000.0 * ((double)curHashCode / (double)numSigs));
                 if (newFraction != fraction) {
                     fraction = newFraction;
-                    System.out.println("Processed: " + (fraction / 10.0) + "%, time=" +
-                            (System.currentTimeMillis() - t1) + " ms.");
+                    System.out.println("Processed: " + (fraction / 100.0) + "%, time=" +
+                            (System.currentTimeMillis() - t1) + " ms., found-so-far=" + 
+                            kmersFound);
                 }
             }
             System.out.println("curQueryPos=" + curQueryPos + " (size=" + values.size() + "), n=" + curHashCode);
@@ -1144,6 +1154,107 @@ public class KmerGutsJava {
             System.out.println("Time: " + (System.currentTimeMillis() - t1) + " ms.");
         }
     }
+
+    /*public static void main(String[] args) throws Exception {
+        if (args.length != 2) {
+            System.err.println("Usage: <program> <kmer-table> <contigs-fasta>");
+            System.exit(1);
+        }
+        FastaReader fr = new FastaReader(new File(args[1]));
+        Map<Long, QueryKmer> queryMap = new HashMap<Long, QueryKmer>();
+        while (true) {
+            String[] entry = fr.read();
+            if (entry == null)
+                break;
+            char[] seq = entry[1].toCharArray();
+            int len = seq.length / 3 + 1;
+            char[] pseq = new char[len];
+            byte[] pIseq = new byte[len];
+            translate(seq, 0, pseq, pIseq);
+            for (int i = 0; i < len - 10; i++) {
+                long value = encoded_kmer(pIseq, i);
+                if (value < 0)
+                    continue;
+                QueryKmer qk = queryMap.get(value);
+                if (qk == null) {
+                    qk = new QueryKmer();
+                    qk.value = value;
+                    qk.posList = new ArrayList<QueryPos>(1);
+                    queryMap.put(value, qk);
+                }
+                QueryPos qp = new QueryPos();
+                qp.queryId = entry[0];
+                qp.pos = i;
+                qk.posList.add(qp);
+            }
+        }
+        List<QueryKmer> values = new ArrayList<QueryKmer>(queryMap.values());
+        System.out.println("Value count: " + values.size());
+        RandomAccessFile is = new RandomAccessFile(new File(args[0]), "r");
+        long t1 = System.currentTimeMillis();
+        int kmersFound = 0;
+        try {
+            long numSigs = readLongLE(is);
+            long entrySize = readLongLE(is);
+            long version = readLongLE(is);
+            System.out.println("numSigs=" + numSigs + ", entrySize=" + entrySize + ", version=" + version);
+            // Update hash-codes in queries and sort them by these hash-codes
+            for (QueryKmer qk : values) {
+                qk.hashCode = qk.value % numSigs;
+            }
+            Collections.sort(values, new Comparator<QueryKmer>() {
+                @Override
+                public int compare(QueryKmer o1, QueryKmer o2) {
+                    int ret = Long.compare(o1.hashCode, o2.hashCode);
+                    if (ret == 0) {
+                        ret = Long.compare(o1.value, o2.value);
+                    }
+                    return ret;
+                }
+            });
+            int fraction = 0;
+            for (QueryKmer qk : values) {
+                int newFraction = (int)(10000.0 * ((double)qk.hashCode / (double)numSigs));
+                if (newFraction != fraction) {
+                    fraction = newFraction;
+                    System.out.println("Processed: " + (fraction / 100.0) + "%, time=" +
+                            (System.currentTimeMillis() - t1) + " ms.");
+                }
+                long pos = 8 * 3 + qk.hashCode * entrySize;
+                is.seek(pos);
+                for (long curHashCode = qk.hashCode; ; curHashCode++) {
+                    long whichKmer = readLongLE(is);
+                    int otuIndex = readIntLE(is);
+                    int avgFromEnd = readIntLE(is);
+                    int functionIndex = readIntLE(is);
+                    float functionWt = readFloatLE(is);
+                    long slot = whichKmer % numSigs;
+                    if (whichKmer > MAX_ENCODED) {
+                        break;
+                    } else {
+                        if (whichKmer == qk.value) {
+                            System.out.println("[" + curHashCode + "] whichKmer=" + whichKmer + " (" + slot + "), otuIndex=" + otuIndex + ", " +
+                                    "avgFromEnd=" + avgFromEnd + ", functionIndex=" + functionIndex + ", " +
+                                    "functionWt=" + functionWt);
+                            sig_kmer hit = new sig_kmer();
+                            hit.which_kmer = whichKmer;
+                            hit.otu_index = otuIndex;
+                            hit.avg_from_end = avgFromEnd;
+                            hit.function_index = functionIndex;
+                            hit.function_wt = functionWt;
+                            qk.hit = hit;
+                            kmersFound++;
+                            break;
+                        }
+                    }
+                }
+            }
+        } finally {
+            is.close();
+            System.out.println("Kmers found: " + kmersFound);
+            System.out.println("Time: " + (System.currentTimeMillis() - t1) + " ms.");
+        }
+    }*/
 
     public static int readIntLE(InputStream is) throws IOException {
         int ch1 = is.read();
@@ -1167,6 +1278,31 @@ public class KmerGutsJava {
     }
 
     public static float readFloatLE(InputStream is) throws IOException {
+        return Float.intBitsToFloat(readIntLE(is));
+    }
+
+    public static int readIntLE(RandomAccessFile is) throws IOException {
+        int ch1 = is.read();
+        int ch2 = is.read();
+        int ch3 = is.read();
+        int ch4 = is.read();
+        if ((ch1 | ch2 | ch3 | ch4) < 0)
+            throw new EOFException();
+        return ((ch1 << 0) + (ch2 << 8) + (ch3 << 16) + (ch4 << 24));
+    }
+
+    public static long readLongLE(RandomAccessFile is) throws IOException {
+        return (((long)(is.read() & 255) << 0) +
+                ((long)(is.read() & 255) << 8) +
+                ((long)(is.read() & 255) << 16) +
+                ((long)(is.read() & 255) << 24) +
+                ((long)(is.read() & 255) << 32) +
+                ((long)(is.read() & 255) << 40) +
+                ((long)(is.read() & 255) << 48) +
+                ((long)is.read() << 56));
+    }
+
+    public static float readFloatLE(RandomAccessFile is) throws IOException {
         return Float.intBitsToFloat(readIntLE(is));
     }
 
