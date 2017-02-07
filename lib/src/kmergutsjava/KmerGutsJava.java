@@ -20,7 +20,6 @@ import java.util.zip.GZIPInputStream;
 import us.kbase.common.service.UObject;
 
 import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 
 /*
 
@@ -163,13 +162,6 @@ public class KmerGutsJava {
 //    #include <string.h>
 
     /* parameters to main -- accessed globally */
-    static int debug = 0;
-    static int aa    = 0;
-    static long size_hash =  1400303159; /* 1400303159  tot_lookups=13474100 retry=2981020 for 5.contigs 4.684 sec */
-    /* 2147483648  tot_lookups=13474100 retry=1736650  */
-    /* 1073741824  tot_lookups=13474100 retry=4728020  */
-    static int write_mem_map = 0;
-    static String data_dir;
 
     public static final int K = 8;
     public static final int MAX_SEQ_LEN = 500000000;
@@ -177,10 +169,6 @@ public class KmerGutsJava {
     public static final long CORE = 20L*20L*20L*20L*20L*20L*20L;
 
     public static final long MAX_ENCODED = CORE*20L; 
-
-    static int tot_lookups = 0;
-    static int retry  = 0;
-
 
     public static final char[] genetic_code = {
             'K','N','K','N','T','T','T','T','R','S','R','S','I','I','M','I',
@@ -194,21 +182,21 @@ public class KmerGutsJava {
     };
 
 
-    public static class SigKmer implements Serializable {
+    public static class SigKmer {
         public long whichKmer;
         public int  otuIndex;
         public int  avgFromEnd;
         public int  functionIndex;
         public float functionWt;
-    } // sig_kmer_t;
+    }
 
     public static final int VERSION = 1;
     
-    public static class kmer_memory_image {
+    public static class KmerMemoryImage {
         long num_sigs;
         long entry_size;
         long  version;
-    } // kmer_memory_image_t;
+    }
 
     public static class kmer_handle {
         SigKmer[] kmer_table;
@@ -222,37 +210,29 @@ public class KmerGutsJava {
        calls (bad, bad, bad...).
      */
 
-    public static class hit {
-        int   oI;
-        int from0_in_prot;      /* offset from start of protein sequence */
-        short avg_off_from_end;  /* average offset from the end */
+    public static class Hit {
+        int oI;
+        int from0InProt;      /* offset from start of protein sequence */
+        int avgOffFromEnd;  /* average offset from the end */
         int fI;
-        float function_wt;
-    } // hit_t;
+        float functionWt;
+    }
 
     public static final int MAX_HITS_PER_SEQ = 40000;
-    static hit[] hits = new hit[MAX_HITS_PER_SEQ]; 
-    static int   num_hits = 0;
 
     public static final int OI_BUFSZ = 5;
     
-    public static class otu_count {
+    public static class OtuCount {
         int oI;
         int count;
     } 
     
-    otu_count[] oI_counts = new otu_count[OI_BUFSZ];
-    static int num_oI = 0;
 
-    static int   current_fI;
-    static char[]  current_id = new char[300];
-    static int   current_length_contig;
-    static char  current_strand;
-    static int   current_prot_off;
-    static int   order_constraint = 0;
-    static int   min_hits = 5;
-    static int   min_weighted_hits = 0;
-    static int   max_gap  = 200;
+    boolean aa = false;
+    boolean orderConstraint = false;
+    int minHits = 5;
+    int minWeightedHits = 0;
+    int maxGap  = 200;
 
     public static final int MAX_FUNC_OI_INDEX = 1000000;
     public static final int MAX_FUNC_OI_VALS  = 100000000;
@@ -526,13 +506,14 @@ public class KmerGutsJava {
             retSize[0] = sz;
         }
         return index_ar;
+    }*/
+
+    private List<String> loadFunctions(File file) {
+        //return load_indexed_ar(file, null);
+        throw new IllegalStateException();
     }
 
-    List<String> load_functions(File file) {
-        return load_indexed_ar(file, null);
-    }
-
-    List<String> load_otus(File file) {
+    /*List<String> load_otus(File file) {
         return load_indexed_ar(file, null);
     }*/
 
@@ -681,236 +662,170 @@ public class KmerGutsJava {
             fprintf(fh, "%d/%f/%d ", hits[i].from0_in_prot,hits[i].function_wt,hits[i].fI);
         }
         fprintf(fh, "\n");
-    }
+    }*/
 
 
-    void process_set_of_hits(kmer_handle_t *kmersH, FILE *fh) {
-        int fI_count = 0;
-        float weighted_hits = 0;
-        int last_hit=0;
-        int i=0;
-        while (i < num_hits) {
-            if (hits[i].fI == current_fI) {
-                last_hit = i;
-                fI_count++;
-                weighted_hits += hits[i].function_wt;
+    public int processSetOfHits(List<Hit> hits, List<String> functionArray, 
+            int currentFI, List<OtuCount> oICounts, PrintWriter out) {
+        int fICount = 0;
+        float weightedHits = 0;
+        int lastHit = 0;
+        for (int i = 0; i < hits.size(); i++) {
+            if (hits.get(i).fI == currentFI) {
+                lastHit = i;
+                fICount++;
+                weightedHits += hits.get(i).functionWt;
             }
             i++;
-        }  if ((fI_count >= min_hits) && (weighted_hits >= min_weighted_hits)) {
-            fprintf(fh, "CALL\t%d\t%d\t%d\t%d\t%s\t%f\n",hits[0].from0_in_prot,
-                    hits[last_hit].from0_in_prot+(K-1),
-                    fI_count,
-                    current_fI,
-                    kmersH->function_array[current_fI],
-                    weighted_hits);
+        }
+        if ((fICount >= minHits) && (weightedHits >= minWeightedHits)) {
+            out.println(String.format("CALL\t%d\t%d\t%d\t%d\t%s\t%f",
+                    hits.get(0).from0InProt,
+                    hits.get(lastHit).from0InProt + (K-1),
+                    fICount,
+                    currentFI,
+                    functionArray.get(currentFI),
+                    weightedHits));
 
-            if (debug > 1) {
-                fprintf(fh, "after-call: ");
-                display_hits(fh);
-            }
             // once we have decided to call a region, we take the kmers for fI and
-            //add them to the counts maintained to assign an OTU to the sequence 
-            for (i=0; (i <= last_hit); i++) {
-                if (hits[i].fI == current_fI) {
+            //add them to the counts maintained to assign an OTU to the sequence
+            for (int i=0; i <= lastHit; i++) {
+                if (hits.get(i).fI == currentFI) {
                     int j;
-                    for (j=0; (j < num_oI) && (oI_counts[j].oI != hits[i].oI); j++) {}
-                    if (j == num_oI) {
-                        if (num_oI == OI_BUFSZ) {
+                    for (j=0; (j < oICounts.size()) && (oICounts.get(j).oI != hits.get(i).oI); j++) {}
+                    if (j == oICounts.size()) {
+                        if (oICounts.size() == OI_BUFSZ) {
                             j--;   // we overwrite the last entry
                         }
-                        else
-                            num_oI++;
-                        oI_counts[j].oI    = hits[i].oI;
-                        oI_counts[j].count = 1;
+                        else {
+                            oICounts.add(new OtuCount());
+                        }
+                        oICounts.get(j).oI = hits.get(i).oI;
+                        oICounts.get(j).count = 1;
                     }
                     else {
-                        oI_counts[j].count++;
+                        oICounts.get(j).count++;
                     }
                     // now we bubble the count back, allowing it to establish
-                    while ((j > 0) && (oI_counts[j-1].count <= oI_counts[j].count)) {
-                        int oI_tmp    = oI_counts[j-1].oI;
-                        int count_tmp = oI_counts[j-1].count;
-                        oI_counts[j-1].oI    = oI_counts[j].oI;
-                        oI_counts[j-1].count = oI_counts[j].count;
-                        oI_counts[j].oI    = oI_tmp;
-                        oI_counts[j].count = count_tmp;
+                    while ((j > 0) && (oICounts.get(j-1).count <= oICounts.get(j).count)) {
+                        OtuCount tmp = oICounts.get(j-1);
+                        oICounts.set(j-1, oICounts.get(j));
+                        oICounts.set(j, tmp);
                         j--;
                     }
                 }
             }
         }
-
-        if ((hits[num_hits-2].fI != current_fI) && (hits[num_hits-2].fI == hits[num_hits-1].fI)) {
-            current_fI = hits[num_hits-1].fI;
+        int numHits = hits.size();
+        if ((hits.get(numHits-2).fI != currentFI) && (hits.get(numHits - 2).fI == hits.get(numHits - 1).fI)) {
+            currentFI = hits.get(numHits - 1).fI;
             // now copy the last two entries to the start of the hits array.  Sorry this is so clumsy
-            hits[0].oI               = hits[num_hits-2].oI;
-            hits[0].from0_in_prot    = hits[num_hits-2].from0_in_prot;
-            hits[0].avg_off_from_end = hits[num_hits-2].avg_off_from_end;
-            hits[0].fI               = hits[num_hits-2].fI;
-            hits[0].function_wt      = hits[num_hits-2].function_wt;
-
-            hits[1].oI               = hits[num_hits-1].oI;
-            hits[1].from0_in_prot    = hits[num_hits-1].from0_in_prot;
-            hits[1].avg_off_from_end = hits[num_hits-1].avg_off_from_end;
-            hits[1].fI               = hits[num_hits-1].fI;
-            hits[1].function_wt      = hits[num_hits-1].function_wt;
-            num_hits                 = 2;
+            hits.set(0, hits.get(numHits - 2));
+            hits.set(1, hits.get(numHits - 1));
+            for (int i = numHits - 1; i >= 2; i--) {
+                hits.remove(i);
+            }
         }
         else {
-            num_hits = 0;
+            hits.clear();
         }
+        return currentFI;
     }
 
-    void gather_hits(int ln_DNA, char strand,int prot_off,char *pseq,
-            unsigned char *pIseq, kmer_handle_t *kmersH, FILE *fh) {
+    public void gatherHits(int ln_DNA, char strand, int frame, 
+            List<PosHit> allHits, List<String> functionArray, 
+            List<OtuCount> oICounts, PrintWriter pw) {
+        Collections.sort(allHits, new Comparator<PosHit>() {
+            @Override
+            public int compare(PosHit o1, PosHit o2) {
+                return Integer.compare(o1.pos, o2.pos);
+            }
+        });
+        List<Hit> hits = new ArrayList<Hit>();
+        int currentFI = 0;
+        for (PosHit ph : allHits) {
+                SigKmer kmersHashEntry = ph.hit;
+                int avgOffEnd = kmersHashEntry.avgFromEnd;
+                int fI = kmersHashEntry.functionIndex;
+                int oI = kmersHashEntry.otuIndex;
+                float fWt = kmersHashEntry.functionWt;
 
-        if (debug >= 3) {
-            fprintf(fh, "translated: %c\t%d\t%s\n",strand,prot_off,pseq);
-        }
-
-        unsigned char *p = pIseq;
-        // pseq and pIseq are the same length 
-
-        unsigned char *bound = pIseq + strlen(pseq) - K;
-        advance_past_ambig(&p,bound);
-        unsigned long long encodedK=0;
-        if (p < bound) {
-            encodedK = encoded_kmer(p);
-        }
-        while (p < bound) {
-            long long  where = lookup_hash_entry(kmersH->kmer_table,encodedK);
-            if (where >= 0) {
-                sig_kmer_t *kmers_hash_entry = &(kmersH->kmer_table[where]);
-                int avg_off_end = kmers_hash_entry->avg_from_end;
-                int fI        = kmers_hash_entry->function_index;
-                int oI          = kmers_hash_entry->otu_index;
-                float f_wt      = kmers_hash_entry->function_wt;
-                if (debug >= 1) {
-                    fprintf(fh, "HIT\t%ld\t%lld\t%d\t%d\t%0.3f\t%d\n",p-pIseq,encodedK,avg_off_end,fI,f_wt,oI);
-                }
-
-                if ((num_hits > 0) && (hits[num_hits-1].from0_in_prot + max_gap) < (p-pIseq)) {
-                    if (num_hits >= min_hits) {
-                        process_set_of_hits(kmersH, fh);
+                if ((hits.size() > 0) && (hits.get(hits.size()-1).from0InProt + maxGap) < ph.pos) {
+                    if (hits.size() >= minHits) {
+                        currentFI = processSetOfHits(hits, functionArray, currentFI, oICounts, pw);
                     }
                     else {
-                        num_hits = 0;
+                        hits.clear();
                     }
                 }
 
-                if (num_hits == 0) {
-                    current_fI = fI;   // if this is the first, set the current_fI
+                if (hits.isEmpty()) {
+                    currentFI = fI;   // if this is the first, set the current_fI
                 }
 
-                if ((! order_constraint) || (num_hits == 0) ||
-                        ((fI == hits[num_hits-1].fI) &&
-                                (abs(((p-pIseq) - hits[num_hits-1].from0_in_prot) - 
-                                        (hits[num_hits-1].avg_off_from_end - avg_off_end)
+                if ((!orderConstraint) || (hits.size() == 0) ||
+                        ((fI == hits.get(hits.size()-1).fI) &&
+                                (Math.abs(((ph.pos) - hits.get(hits.size()-1).from0InProt) - 
+                                        (hits.get(hits.size()-1).avgOffFromEnd - avgOffEnd)
                                         ) <= 20))) {
                     // we have a new hit, so we add it to the global set of hits
-                    hits[num_hits].oI = oI;
-                    hits[num_hits].fI = fI;
-                    hits[num_hits].from0_in_prot = p-pIseq;
-                    hits[num_hits].avg_off_from_end = avg_off_end;
-                    hits[num_hits].function_wt = f_wt;
-                    if (num_hits < MAX_HITS_PER_SEQ - 2) 
-                        num_hits++;
-                    if (debug > 1) {
-                        fprintf(fh, "after-hit: ");
-                        display_hits(fh);
+                    if (hits.size() < MAX_HITS_PER_SEQ - 2) {
+                        Hit hit = new Hit();
+                        hit.oI = oI;
+                        hit.fI = fI;
+                        hit.from0InProt = ph.pos;
+                        hit.avgOffFromEnd = avgOffEnd;
+                        hit.functionWt = fWt;
+                        hits.add(hit);
                     }
-                    if ((num_hits > 1) && (current_fI != fI) &&           // if we have a pair of new fIs, it is time to
-                            (hits[num_hits-2].fI == hits[num_hits-1].fI)) {   // process one set and initialize the next
-                        process_set_of_hits(kmersH, fh);
+                    if ((hits.size() > 1) && (currentFI != fI) &&           // if we have a pair of new fIs, it is time to
+                            (hits.get(hits.size()-2).fI == hits.get(hits.size()-1).fI)) {   // process one set and initialize the next
+                        currentFI = processSetOfHits(hits, functionArray, currentFI, oICounts, pw);
                     }
                 }
+        }
+        if (hits.size() >= minHits) {
+            processSetOfHits(hits, functionArray, currentFI, oICounts, pw);
+        }
+    }
+
+    void tabulateOtuDataForContig(String currentId, int currentLengthContig, 
+            List<OtuCount> oICounts, PrintWriter pw) {
+        pw.print(String.format("OTU-COUNTS\t%s[%d]", currentId, currentLengthContig));
+        for (OtuCount oICount : oICounts) {
+            pw.print(String.format("\t%d-%d", oICount.count, oICount.oI));
+        }
+        pw.println();
+        oICounts.clear();
+    }
+
+    public void processAASeq(String id, int proteinLen, Map<Character, List<List<PosHit>>> hits, 
+            List<String> functionArray, PrintWriter pw) {
+        List<OtuCount> oICounts = new ArrayList<OtuCount>();
+        pw.println(String.format("PROTEIN-ID\t%s", id));
+        gatherHits(proteinLen, '+', 0, hits.get('+').get(0), functionArray, oICounts, pw);  
+        tabulateOtuDataForContig(id, proteinLen, oICounts, pw);
+    }
+
+    void processSeq(String id, int contigLen, Map<Character, List<List<PosHit>>> hits, 
+            List<String> functionArray, PrintWriter pw) {
+        List<OtuCount> oICounts = new ArrayList<OtuCount>();
+        pw.println(String.format("processing %s[%d]", id, contigLen));
+        for (char strand : hits.keySet()) { 
+            List<List<PosHit>> hitsForStrand = hits.get(strand);
+            for (int frame = 0; frame < 3; frame++) {
+                List<PosHit> hitsForFrame = hitsForStrand.get(frame);
+                pw.println(String.format("TRANSLATION\t%s\t%d\t%c\t%d", id,
+                        contigLen,
+                        strand,
+                        frame));
+                gatherHits(contigLen, strand, frame, hitsForFrame, functionArray, oICounts, pw);
             }
-            p++;
-            if (p < bound) {
-                if (*(p+K-1) < 20) {
-                    encodedK = ((encodedK % CORE) * 20L) + *(p+K-1);
-                }
-                else {
-                    p += K;
-                    advance_past_ambig(&p,bound);
-                    if (p < bound) {
-                        encodedK = encoded_kmer(p);
-                    }
-                }
-            }    
         }
-        if (num_hits >= min_hits) {
-            process_set_of_hits(kmersH, fh);
-        }
-        num_hits = 0;
-    }*/
-
-    /*void tabulate_otu_data_for_contig(FILE *fh) {
-        int i;
-        fprintf(fh, "OTU-COUNTS\t%s[%d]",current_id,current_length_contig);
-        for (i=0; (i < num_oI); i++) {
-            fprintf(fh, "\t%d-%d",oI_counts[i].count,oI_counts[i].oI);
-        }
-        fprintf(fh, "\n");
-        num_oI = 0;
+        tabulateOtuDataForContig(id, contigLen, oICounts, pw);
     }
 
-    void process_aa_seq(char *id,char *pseq,kmer_handle_t *kmersH, FILE *fh) {
-        static unsigned char *pIseq = 0;
-        if (pIseq == 0)
-        {
-            pIseq = malloc(MAX_SEQ_LEN / 3);
-        }
-        //static unsigned char pIseq[MAX_SEQ_LEN / 3];
-
-        strcpy(current_id,id);
-        fprintf(fh, "PROTEIN-ID\t%s\n",id);
-        int ln = strlen(pseq);
-        current_length_contig = ln;
-        current_strand        = '+';
-        current_prot_off      = 0;
-        int i;
-        for (i=0; (i < ln); i++)
-            pIseq[i] = to_amino_acid_off(*(pseq+i));
-        gather_hits(ln,'+',0,pseq,pIseq,kmersH,fh);  
-        tabulate_otu_data_for_contig(fh);
-    }
-
-    void process_seq(String id, String data, kmer_handle[] kmersH, PrintWriter pw) {
-
-        int codonCount = data.length() / 3 + 1;
-        char[] pseq = new char[codonCount];
-        byte[] pIseq = new byte[codonCount];
-
-        String current_id = id;
-        int ln = data.length();
-        current_length_contig = ln;
-        pw.println(String.format("processing %s[%d]",id,ln));
-        for (int i = 0; i < 3; i++) {
-            translate(data,i,pseq,pIseq);
-            current_strand   = '+';
-            current_prot_off = i;
-            pw.println(String.format("TRANSLATION\t%s\t%d\t%c\t%d",current_id,
-                    current_length_contig,
-                    current_strand,
-                    current_prot_off));
-            gather_hits(ln,'+',i,pseq,pIseq,kmersH, pw);
-        }
-        char[] cdata = rev_comp(data);
-        for (int i=0; (i < 3); i++) {
-            translate(cdata,i,pseq,pIseq);
-            current_strand   = '-';
-            current_prot_off = i;
-            pw.println(String.format("TRANSLATION\t%s\t%d\t%c\t%d",current_id,
-                    current_length_contig,
-                    current_strand,
-                    current_prot_off));
-            gather_hits(ln,'-',i,pseq,pIseq,kmersH, pw);
-        }
-        tabulate_otu_data_for_contig(pw);
-    }
-
-    int main(int argc,char *argv[]) {
+    /*int main(int argc,char *argv[]) {
         int c;
         char *past;
         char file[300];
@@ -936,19 +851,13 @@ public class KmerGutsJava {
                 min_weighted_hits = strtol(optarg,&past,0);
                 break;
             case 'O':
-                order_constraint = 1;
+                order_constraint = true;
                 break;
             case 'g':
                 max_gap = strtol(optarg,&past,0);
                 break;
             case 'D':
                 strcpy(file,optarg);
-                break;
-            case 's':
-                size_hash = strtol(optarg,&past,0);
-                break;
-            case 'w':
-                write_mem_map = 1;
                 break;
             default:
                 fprintf(stderr,"arguments: [-a] [-d level] [-s hash-size] [-w] [-m min_hits] -D DataDir \n");
@@ -1024,54 +933,125 @@ public class KmerGutsJava {
             System.err.println("Usage: <program> <kmer-table> <contigs-fasta>");
             System.exit(1);
         }
-        try {
-            List<QueryKmer> hits = lookup(args[0], args[1]);
-        } catch (Exception ex) {
-            System.err.println("Error: " + ex.getMessage());
+        String kmerTableDir = args[0];
+        String contigsPath = args[1];
+        KmerGutsJava instance = new KmerGutsJava();
+        PrintWriter pw = new PrintWriter(System.out);
+        instance.run(new File(kmerTableDir), new File(contigsPath), pw);
+    }
+    
+    public void run(File kmerTableDir, File contigsFile, PrintWriter pw) throws Exception {
+        File kmerTableFile = new File(kmerTableDir, "kmer.table.mem_map");
+        File kmerTableGzFile = new File(kmerTableDir, kmerTableFile.getName() + ".gz");
+        if (kmerTableGzFile.exists()) {
+            kmerTableFile = kmerTableGzFile;
         }
+        //List<QueryKmer> hits = lookup(kmerTableFile, contigsPath);
         List<QueryKmer> hits = UObject.getMapper().readValue(new File("/kb/module/work/hits.json"), 
                 new TypeReference<List<QueryKmer>>() {});
         int count = 0;
+        Map<String, Map<Character, List<List<PosHit>>>> queryHits = new LinkedHashMap<String, Map<Character, List<List<PosHit>>>>();
         for (QueryKmer qk : hits) {
             if (qk.hit != null) {
                 count++;
+                for (QueryPos qp : qk.posList) {
+                    String id = qp.queryId;
+                    char strand = qp.strand;
+                    int frame = qp.frame;
+                    Map<Character, List<List<PosHit>>> h1 = queryHits.get(id);
+                    if (h1 == null) {
+                        h1 = new LinkedHashMap<Character, List<List<PosHit>>>();
+                        queryHits.put(id, h1);
+                    }
+                    List<List<PosHit>> h2 = h1.get(strand);
+                    if (h2 == null) {
+                        h2 = new ArrayList<List<PosHit>>();
+                        h1.put(strand, h2);
+                    }
+                    while (h2.size() <= frame) {
+                        h2.add(new ArrayList<PosHit>());
+                    }
+                    PosHit ph = new PosHit();
+                    ph.pos = qp.pos;
+                    ph.hit = qk.hit;
+                    h2.get(frame).add(ph);
+                }
             }
         }
         System.out.println("Kmers found: " + count);
-    }
-    
-    private static List<QueryKmer> lookup(String kmerTableFilePath, String contigsPath) throws Exception {
-        FastaReader fr = new FastaReader(new File(contigsPath));
-        Map<Long, QueryKmer> queryMap = new HashMap<Long, QueryKmer>();
+        List<String> functionArray = loadFunctions(new File(kmerTableDir, "function.index"));
+        FastaReader fr = new FastaReader(contigsFile);
         while (true) {
             String[] entry = fr.read();
             if (entry == null)
                 break;
+            String id = entry[0];
+            if (!queryHits.containsKey(id)) {
+                continue;
+            }
+            int seqLen = entry[1].length();
+            if (aa) {
+                processAASeq(id, seqLen, queryHits.get(id), functionArray, pw);
+            } else {
+                processSeq(id, seqLen, queryHits.get(id), functionArray, pw);
+            }
+            pw.flush();
+        }
+    }
+    
+    private static void addKmers(String id, char strand, int frame, char[] pseq,
+            byte[] pIseq, Map<Long, QueryKmer> queryMap) {
+        for (int i = 0; i < pIseq.length - K; i++) {
+            long value = encoded_kmer(pIseq, i);
+            if (value < 0)
+                continue;
+            QueryKmer qk = queryMap.get(value);
+            if (qk == null) {
+                qk = new QueryKmer();
+                qk.value = value;
+                qk.posList = new ArrayList<QueryPos>(1);
+                queryMap.put(value, qk);
+            }
+            QueryPos qp = new QueryPos();
+            qp.queryId = id;
+            qp.strand = strand;
+            qp.frame = (byte)frame;
+            qp.pos = i;
+            qk.posList.add(qp);
+        }
+    }
+    
+    private List<QueryKmer> lookup(File kmerTableFile, File contigsPath) throws Exception {
+        Map<Long, QueryKmer> queryMap = new HashMap<Long, QueryKmer>();
+        FastaReader fr = new FastaReader(contigsPath);
+        while (true) {
+            String[] entry = fr.read();
+            if (entry == null)
+                break;
+            String id = entry[0];
             char[] seq = entry[1].toCharArray();
-            int len = seq.length / 3 + 1;
-            char[] pseq = new char[len];
-            byte[] pIseq = new byte[len];
-            translate(seq, 0, pseq, pIseq);
-            for (int i = 0; i < len - 10; i++) {
-                long value = encoded_kmer(pIseq, i);
-                if (value < 0)
-                    continue;
-                QueryKmer qk = queryMap.get(value);
-                if (qk == null) {
-                    qk = new QueryKmer();
-                    qk.value = value;
-                    qk.posList = new ArrayList<QueryPos>(1);
-                    queryMap.put(value, qk);
+            if (aa) {
+                byte[] pIseq = new byte[seq.length];
+                for (int i = 0; i < seq.length; i++) {
+                    pIseq[i] = to_amino_acid_off(seq[i]);
                 }
-                QueryPos qp = new QueryPos();
-                qp.queryId = entry[0];
-                qp.pos = i;
-                qk.posList.add(qp);
+            } else {
+                int len = seq.length / 3 + 1;
+                char[] pseq = new char[len];
+                byte[] pIseq = new byte[len];
+                for (int frame = 0; frame < 3; frame++) {
+                    translate(seq, frame, pseq, pIseq);
+                    addKmers(id, '+', frame, pseq, pIseq, queryMap);
+                }
+                char[] complSeq = rev_comp(seq);
+                for (int frame = 0; frame < 3; frame++) {
+                    translate(complSeq, frame, pseq, pIseq);
+                    addKmers(id, '-', frame, pseq, pIseq, queryMap);
+                }
             }
         }
         List<QueryKmer> values = new ArrayList<QueryKmer>(queryMap.values());
         System.out.println("Value count: " + values.size());
-        File kmerTableFile = new File(kmerTableFilePath);
         InputStream is;
         if (kmerTableFile.getName().endsWith(".gz")) {
             is = new BufferedInputStream(new GZIPInputStream(new BufferedInputStream(new FileInputStream(kmerTableFile))));
@@ -1455,15 +1435,22 @@ public class KmerGutsJava {
         }
     }
     
-    public static class QueryKmer implements Serializable {
+    public static class QueryKmer {
         public long value;
         public long hashCode;
         public List<QueryPos> posList;
         public SigKmer hit;
     }
     
-    public static class QueryPos implements Serializable {
+    public static class QueryPos {
         public String queryId;
+        public char strand;
+        public byte frame;
         public int pos;
+    }
+    
+    public static class PosHit {
+        public int pos;
+        public SigKmer hit;
     }
 }
