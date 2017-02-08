@@ -4,23 +4,23 @@ import java.io.BufferedInputStream;
 import java.io.EOFException;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.util.List;
 
 import java.io.*;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedList;
 import java.util.Map;
+import java.util.Queue;
 import java.util.StringTokenizer;
 import java.util.zip.GZIPInputStream;
-
-import us.kbase.common.service.UObject;
-
-import com.fasterxml.jackson.core.type.TypeReference;
 
 /*
 
@@ -31,30 +31,15 @@ labeled the critical changes with
 
 Note: to run use
 
-   build_data_directory KmerData 8
-
-Then use
-
-   kmer_guts -w -D KmerData < input.contigs
-
-to build an memory map -- it can take 10-15 minutes.
-
-Then use
-
    kmer_guts -D KmerData < input.contigs
-
-to run.  Eventually, the memory-mapped hash table, which is large,
-will become resident, and these should go fairly quickly.
-
    kmer_guts -D KmerData -a  < amino_acid_sequences.fasta > hits
 
 can be used to call translated PEGs.
 
 where KmersData is a directory that must contain
 
-       final.kmers     [a file of [kmer,avg-offset-from-end,function-index,otu-index]]
-       function.index  [a file of [index,function] pairs]
-       otu.index       [a file of [index,otu] pairs]
+       function.index     [a file of [index,function] pairs]
+       kmer.table.mem_map [a binary file with KMER hash table]
 ----------------
 
 Conceptually, the data associated with each signature Kmer is
@@ -66,24 +51,9 @@ Conceptually, the data associated with each signature Kmer is
                 function index
                 OTU index
 
-The program takes as input a  file that should be thought of as a sequence
-of fasta files in which a single line
-
-          >FLUSH
-
-occurs after each infut file.  That is,
-
-          >contig1
-      acgtacgt
-      >FLUSH
-      >contig2
-      acgtacgt
-
-is an input file containing two input fasta files (each containing a single, short
-contig).  The '>FLUSH' causes all files to be flushed.
-
+The program takes as input a fasta file.
 In effect, the program processes a sequence of requests.  The output for each request
-is a piece of stadout terminated by a line
+is a piece of stdout terminated by a line
 
           //
 
@@ -108,96 +78,33 @@ you get a line of the form
 
          OTU-COUNTS cnt1-otu1 cnt2-otu2 ...
 
-This code uses a table indicating which K-mers are signatures. I call this the 
-"kmer_bits" table.  You can run this code for K ranging from 5 to 8.
-
-#################
-The line
-
-    #define K 8
-
-defines the kmer size.  
-The code is intended to work with only 5-mers or 8-mers.  That is:
-
-YOU MUST SET K TO EITHER 5 OR 8 (sorry).
-############################################
-
-COMMAND LINE ARGUMENTS:
-
-    -a         means amino acid input sequence (defaults to DNA)
-
-    -d Level   sets debugging level (1 shows hits; after that it gets intense
-
-    -m MinHits minimum number of hits to get CALLed
-
-    -M MinWeighted  Kmers are now weighted; this is the min of the sum of the weights,
-
-    -O         use order contraint
-
-    -g MaxGap  sets maximum allowed gap between HITS
-
-    -D Data    sets the Data directory where the memory map lives
-
-    -s HashSize make sure that the value is the same when you save the memory map
-                and when you use it to search
-
-    -w          write the memory map (means Data must contain final.kmers and the indexes
-
+This code uses a table indicating which K-mers are signatures.
  */
 public class KmerGutsJava {
-
-//    #define _FILE_OFFSET_BITS 64
-//    #include <stdio.h>
-//    #include <stdlib.h>
-//    #include <sys/socket.h>
-//    #include <netinet/in.h>
-//    #include <arpa/inet.h>
-//    #include <ctype.h>
-//    #include <fcntl.h>
-//    #include <unistd.h>
-//    #include <signal.h>
-//    #include <sys/types.h>
-//    #include <sys/mman.h>
-//    #include <sys/stat.h>
-//    #include <errno.h>
-//    #include <string.h>
-
-    /* parameters to main -- accessed globally */
-
+    // Constants
     public static final int K = 8;
-    public static final int MAX_SEQ_LEN = 500000000;
-
     public static final long CORE = 20L*20L*20L*20L*20L*20L*20L;
-
     public static final long MAX_ENCODED = CORE*20L; 
-
     public static final char[] GENETIC_CODE = {
             'K','N','K','N','T','T','T','T','R','S','R','S','I','I','M','I',
             'Q','H','Q','H','P','P','P','P','R','R','R','R','L','L','L','L',
             'E','D','E','D','A','A','A','A','G','G','G','G','V','V','V','V',
             '*','Y','*','Y','S','S','S','S','*','C','W','C','L','F','L','F'
     };
-
     public static final char[] PROT_ALPHA = {
             'A','C','D','E','F','G','H','I','K','L','M','N','P','Q','R','S','T','V','W','Y' 
     };
-
     public static final int VERSION = 1;
-
     public static final int MAX_HITS_PER_SEQ = 40000;
-
     public static final int OI_BUFSZ = 5;
-    
-    boolean aa = false;
-    boolean orderConstraint = false;
-    int minHits = 5;
-    int minWeightedHits = 0;
-    int maxGap  = 200;
 
-    public static final int MAX_FUNC_OI_INDEX = 1000000;
-    public static final int MAX_FUNC_OI_VALS  = 100000000;
-
-    /* =========================== end of reduction global variables ================= */
+    /* parameters to main -- accessed globally */
+    private boolean aa = false;
+    private boolean orderConstraint = false;
+    private int minHits = 5;
+    private int minWeightedHits = 0;
+    private int maxGap  = 200;
+    private boolean debug = false;
 
     public static byte toAminoAcidOff(char c) {
         switch (c)
@@ -408,12 +315,10 @@ public class KmerGutsJava {
         return 4;
     }
 
-    public static void translate(char[] seq, int off, char[] pseq, byte[] pIseq) {
-
-        int i;
+    private static void translate(char[] seq, int off, char[] pseq, byte[] pIseq) {
         int max = seq.length - 3;
         int p = 0;
-        for (i=off; (i <= max); ) {
+        for (int i = off; i <= max; ) {
             int c1 = dnaChar(seq[i++]);
             int c2 = dnaChar(seq[i++]);
             int c3 = dnaChar(seq[i++]);
@@ -464,160 +369,18 @@ public class KmerGutsJava {
         return loadIndexedArray(file);
     }
 
-    /*List<String> load_otus(File file) {
-        return load_indexed_ar(file, null);
-    }*/
-
-    /*long lookup_hash_entry(sig_kmer[] sig_kmers, long encodedK) {
-        long long  hash_entry = encodedK % size_hash;
-        if (debug >= 2)
-            tot_lookups++;
-        while ((sig_kmers[hash_entry].which_kmer <= MAX_ENCODED) && (sig_kmers[hash_entry].which_kmer != encodedK)) {
-            if (debug >= 2)
-                retry++;
-            hash_entry++;
-            if (hash_entry == size_hash)
-                hash_entry = 0;
+    void displayHits(List<Hit> hits, PrintWriter pw) {
+        pw.print("hits: ");
+        int i;
+        for (i=0; i < hits.size(); i++) {
+            Hit h = hits.get(i);
+            pw.print(String.format("%d/%f/%d ", h.from0InProt, h.functionWt, h.fI));
         }
-        if (sig_kmers[hash_entry].which_kmer > MAX_ENCODED) {
-            return -1;
-        }
-        else {
-            return hash_entry;
-        }
-    }*/
-
-    /*kmer_handle_t *init_kmers(char *dataD) {
-        kmer_handle_t *handle = malloc(sizeof(kmer_handle_t));
-
-        kmer_memory_image_t *image;
-
-        char file[300];
-        strcpy(file,dataD);
-        strcat(file,"/function.index");
-        handle->function_array = load_functions(file);
-
-        strcpy(file,dataD);
-        strcat(file,"/otu.index");
-        handle->otu_array      = load_otus(file);
-
-        File fileM = new File(dataD, "kmer.table.mem_map");
-
-            int fd;
-            if ((fd = open(fileM, O_RDONLY)) == -1) {
-                perror("open");
-                exit(1);
-            }
-
-            struct stat sbuf;
-            if (stat(fileM, &sbuf) == -1) {
-                fprintf(stderr, "stat %s failed: %s\n", fileM, strerror(errno));
-                exit(1);
-            }
-            unsigned long long file_size = sbuf.st_size;
-
-            int flags = MAP_SHARED;
-            #ifdef MAP_POPULATE
-            flags |= MAP_POPULATE;
-            #endif
-
-            image = (kmer_memory_image_t *) mmap((caddr_t)0, file_size, PROT_READ, flags, fd, 0);
-
-            if (image == (kmer_memory_image_t *)(-1)) {
-                fprintf(stderr, "mmap of kmer_table %s failed: %s\n", fileM, strerror(errno));
-                exit(1);
-            }
-
-            if (image->version != (long long) VERSION) {
-                fprintf(stderr, "Version mismatch for file %s: file has %lld code has %lld\n", 
-                        fileM, image->version, (long long) VERSION);
-                exit(1);
-            }
-
-            if (image->entry_size != (unsigned long long) sizeof(sig_kmer_t)) {
-                fprintf(stderr, "Version mismatch for file %s: file has entry size %lld code has %lld\n",
-                        fileM, image->entry_size, (unsigned long long) sizeof(sig_kmer_t));
-                exit(1);
-            }
-
-            size_hash = image->num_sigs;
-            handle->num_sigs = size_hash;
-            handle->kmer_table = (sig_kmer_t *) (image + 1);
-
-            if (file_size != ((sizeof(sig_kmer_t) * image->num_sigs) + sizeof(kmer_memory_image_t))) {
-                fprintf(stderr, "Version mismatch for file %s: file size does not match\n", fileM);
-                exit(1);
-            }
-
-            fprintf(stderr, "Set size_hash=%lld from file size %lld\n", size_hash, file_size);
-
-        return handle;
-    }*/
-
-    /*void advance_past_ambig(unsigned char **p,unsigned char *bound) {
-
-        if (K == 5) {
-            while (((*p) < bound) &&
-                    ((*(*p) == 20)     || 
-                            (*((*p)+1) == 20) || 
-                            (*((*p)+2) == 20) || 
-                            (*((*p)+3) == 20) || 
-                            (*((*p)+4) == 20) )) {
-                (*p)++;
-            }
-        }
-        else {   //  ##### ASSUMING K == 8 #### 
-            int bad = 1;
-            while ((*p < bound) && (bad == 1)) {
-                bad = 0;
-                if      (*((*p)+7) == 20) {
-                    bad = 1;
-                    (*p) += 8;
-                }
-                else if (*((*p)+6) == 20) {
-                    bad = 1;
-                    (*p) += 7;
-                }
-                else if (*((*p)+5) == 20) {
-                    bad = 1;
-                    (*p) += 6;
-                }
-                else if (*((*p)+4) == 20) {
-                    bad = 1;
-                    (*p) += 5;
-                }
-                else if (*((*p)+3) == 20) {
-                    bad = 1;
-                    (*p) += 4;
-                }
-                else if (*((*p)+2) == 20) {
-                    bad = 1;
-                    (*p) += 3;
-                }
-                else if (*((*p)+1) == 20) {
-                    bad = 1;
-                    (*p) += 2;
-                }
-                else if (*((*p)+0) == 20) {
-                    bad = 1;
-                    (*p) += 1;
-                }
-            } 
-        }
+        pw.println();
     }
 
-    void display_hits(FILE *fh) {
-        fprintf(fh, "hits: ");
-        int i;
-        for (i=0; (i < num_hits); i++) {
-            fprintf(fh, "%d/%f/%d ", hits[i].from0_in_prot,hits[i].function_wt,hits[i].fI);
-        }
-        fprintf(fh, "\n");
-    }*/
-
-
     public int processSetOfHits(List<Hit> hits, List<String> functionArray, 
-            int currentFI, List<OtuCount> oICounts, PrintWriter out) {
+            int currentFI, List<OtuCount> oICounts, PrintWriter pw) {
         int fICount = 0;
         float weightedHits = 0;
         int lastHit = 0;
@@ -627,16 +390,20 @@ public class KmerGutsJava {
                 fICount++;
                 weightedHits += hits.get(i).functionWt;
             }
-            i++;
         }
         if ((fICount >= minHits) && (weightedHits >= minWeightedHits)) {
-            out.println(String.format("CALL\t%d\t%d\t%d\t%d\t%s\t%f",
+            pw.println(String.format("CALL\t%d\t%d\t%d\t%d\t%s\t%f",
                     hits.get(0).from0InProt,
                     hits.get(lastHit).from0InProt + (K-1),
                     fICount,
                     currentFI,
                     functionArray.get(currentFI),
                     weightedHits));
+
+            if (debug) {
+                pw.print("after-call: ");
+                displayHits(hits, pw);
+            }
 
             // once we have decided to call a region, we take the kmers for fI and
             //add them to the counts maintained to assign an OTU to the sequence
@@ -698,6 +465,11 @@ public class KmerGutsJava {
                 int avgOffEnd = ph.avgOffFromEnd;
                 int fI = ph.fI;
 
+                if (debug) {
+                    pw.println(String.format("HIT\t%d\t%d\t%d\t%d\t%1.3f\t%d", 
+                            ph.from0InProt, 0, avgOffEnd, fI, ph.functionWt, ph.oI));
+                }
+
                 if ((hits.size() > 0) && (hits.get(hits.size()-1).from0InProt + maxGap) < ph.from0InProt) {
                     if (hits.size() >= minHits) {
                         currentFI = processSetOfHits(hits, functionArray, currentFI, oICounts, pw);
@@ -719,6 +491,10 @@ public class KmerGutsJava {
                     // we have a new hit, so we add it to the global set of hits
                     if (hits.size() < MAX_HITS_PER_SEQ - 2) {
                         hits.add(ph);
+                        if (debug) {
+                            pw.print("after-hit: ");
+                            displayHits(hits, pw);
+                        }
                     }
                     if ((hits.size() > 1) && (currentFI != fI) &&           // if we have a pair of new fIs, it is time to
                             (hits.get(hits.size()-2).fI == hits.get(hits.size()-1).fI)) {   // process one set and initialize the next
@@ -775,141 +551,104 @@ public class KmerGutsJava {
         tabulateOtuDataForContig(id, contigLen, oICounts, pw);
     }
 
-    /*int main(int argc,char *argv[]) {
-        int c;
-        char *past;
-        char file[300];
-        int is_server = 0;
-        unsigned short port;
-
-        while ((c = getopt (argc, argv, "ad:s:wD:m:g:OM:l:")) != -1) {
-            switch (c) {
-            case 'a':
-                aa = 1;
-                break;
-            case 'd':
-                debug = strtol(optarg,&past,0);
-                break;
-            case 'l':
-                port = atoi(optarg);
-                is_server = 1;
-                break;
-            case 'm':
-                min_hits = strtol(optarg,&past,0);
-                break;
-            case 'M':
-                min_weighted_hits = strtol(optarg,&past,0);
-                break;
-            case 'O':
-                order_constraint = true;
-                break;
-            case 'g':
-                max_gap = strtol(optarg,&past,0);
-                break;
-            case 'D':
-                strcpy(file,optarg);
-                break;
-            default:
-                fprintf(stderr,"arguments: [-a] [-d level] [-s hash-size] [-w] [-m min_hits] -D DataDir \n");
-                abort ();
-            }
-        }
-
-        kmer_handle_t *kmersH = init_kmers(file);
-
-        run_from_filehandle(kmersH, stdin, stdout);
-        return 0;
-    }
-
-    void run_from_filehandle(kmer_handle_t *kmersH, FILE *fh_in, FILE *fh_out)
-    {
-        static char *data = 0;
-        if (data == 0)
-        {
-            data = malloc(MAX_SEQ_LEN);
-        }
-
-        // static char data[MAX_SEQ_LEN];
-        int got_gt = 0;
-        int i;
-        char *p;
-        char id[2000];
-
-        while (((!got_gt && (fscanf(fh_in,">%s",id) == 1)) ||
-                (got_gt && (fscanf(fh_in,"%s",id) == 1)))) {
-            while (getc(fh_in) != '\n')
-                ;
-            if ((id[0] == 'F') &&
-                    (id[1] == 'L') &&
-                    (id[2] == 'U') &&
-                    (id[3] == 'S') &&
-                    (id[4] == 'H')) {   // ugly compare, since \n is included in id 
-
-                fprintf(fh_out, "//\n");
-                got_gt = 0;
-            }
-            else {
-
-                for (p=data; ((i = getc(fh_in)) != -1) && (i != '>');) {
-                    if ((i != ' ') && (i != '\n'))
-                        *(p++) = toupper(i);
-                }
-
-                if (i == '>')
-                    got_gt = 1;
-                else
-                    got_gt = 0;
-
-                *p=0;
-                if ((p-data) > MAX_SEQ_LEN) {
-                    fprintf(stderr,"The contig size exceeds %d; bump MAX_SEQ_LEN\n",MAX_SEQ_LEN);
-                    exit(1);
-                }
-
-                if (! aa)
-                    process_seq(id,data,kmersH, fh_out);
-                else
-                    process_aa_seq(id,data,kmersH, fh_out);
-                fflush(fh_out);
-            }
-        }
-
-        if (debug >= 2)
-            fprintf(fh_out, "tot_lookups=%d retry=%d\n",tot_lookups,retry);
-    }*/
-
     public static void main(String[] args) throws Exception {
-        if (args.length != 2) {
-            System.err.println("Usage: <program> <kmer-table> <contigs-fasta>");
-            System.exit(1);
-        }
+        String kmerTableDir = null;
+        String queryFastaFile = null;
+        String outputFile = null;
+        KmerGutsJava instance = new KmerGutsJava();
         try {
-            String kmerTableDir = args[0];
-            String contigsPath = args[1];
-            KmerGutsJava instance = new KmerGutsJava();
-            PrintWriter pw = new PrintWriter(System.out);
-            instance.run(new File(kmerTableDir), new File(contigsPath), pw);
-            pw.flush();
+            Queue<String> params = new LinkedList<String>(Arrays.asList(args));
+            while (!params.isEmpty()) {
+                String param = params.poll();
+                if(!param.startsWith("-")) {
+                    throw new IllegalStateException("Parameter name should start from '-': " + param);
+                }
+                param = param.substring(1);
+                if (param.length() != 1) {
+                    throw new IllegalStateException("Unknown parameter: -" + param);
+                }
+                switch (param.charAt(0)) {
+                case 'a':
+                    instance.aa = true;
+                    break;
+                case 'd':
+                    instance.debug = true;
+                    break;
+                case 'm':
+                    instance.minHits = Integer.parseInt(params.poll());
+                    break;
+                case 'M':
+                    instance.minWeightedHits = Integer.parseInt(params.poll());
+                    break;
+                case 'O':
+                    instance.orderConstraint = true;
+                    break;
+                case 'g':
+                    instance.maxGap = Integer.parseInt(params.poll());
+                    break;
+                case 'D':
+                    kmerTableDir = params.poll();
+                    break;
+                case 'q':
+                    queryFastaFile = params.poll();
+                    break;
+                case 'o':
+                    outputFile = params.poll();
+                    break;
+                default:
+                    throw new IllegalStateException("Unknown parameter: -" + param);
+                }
+            }
+            if (kmerTableDir == null) {
+                throw new IllegalStateException("-D parameter is required");
+            }
         } catch (Exception ex) {
-            ex.printStackTrace();
+            System.out.println("Error: " + ex.getMessage());
+            System.out.println("Usage: kmer_guts [options] -D DataDir");
+            System.out.println("Arguments:");
+            System.out.println(" -a - (optional) amino acids in input FASTA (default is DNA)");
+            System.out.println(" -d - (optional) print debug messages");
+            System.out.println(" -m - (optional) min. number of hits in result (integer, default = )");
+            System.out.println(" -M - min. sum of hit weights");
+            System.out.println(" -O - order constraint");
+            System.out.println(" -g - max. gap between hits to be joined");
+            System.out.println(" -D - data directory with kmer-table and function-index files");
+            System.out.println(" -q - ");
+            System.out.println(" -");
+        }
+        PrintWriter pw = null;
+        try {
+            if (outputFile != null) {
+                pw = new PrintWriter(new FileWriter(new File(outputFile)));
+            } else {
+                pw = new PrintWriter(System.out);
+            }
+            instance.run(new File(kmerTableDir), new File(queryFastaFile), pw);
+            pw.flush();
+        } finally {
+            if (outputFile != null) {
+                pw.close();
+            }
         }
     }
     
-    public void run(File kmerTableDir, File contigsFile, PrintWriter pw) throws Exception {
+    public void run(File kmerTableDir, File queryFastaFile, PrintWriter pw) throws Exception {
         File kmerTableFile = new File(kmerTableDir, "kmer.table.mem_map");
         File kmerTableGzFile = new File(kmerTableDir, kmerTableFile.getName() + ".gz");
         if (kmerTableGzFile.exists()) {
             kmerTableFile = kmerTableGzFile;
         }
-        File hitsFile = new File("/kb/module/work/hits.json");
-        //File hitsFile = new File("test_local/workdir/hits.json");
-        {
-            List<HitContainer> hits = lookup(kmerTableFile, contigsFile);
-            System.out.println("Writing hits to JSON file");
-            UObject.getMapper().writeValue(hitsFile, hits);
-            System.out.println("Done");
+        BufferedReader inputBr;
+        if (queryFastaFile == null) {
+            inputBr = new BufferedReader(new InputStreamReader(System.in));
+        } else {
+            inputBr = new BufferedReader(new FileReader(queryFastaFile));
         }
-        List<HitContainer> hits = UObject.getMapper().readValue(hitsFile, new TypeReference<List<HitContainer>>() {});
+        List<Query> input = readFasta(inputBr);
+        if (queryFastaFile != null) {
+            inputBr.close();
+        }
+        List<HitContainer> hits = lookup(kmerTableFile, input, pw);
         Map<HitContainerKey, HitContainer> hitCnts = 
                 new LinkedHashMap<HitContainerKey, HitContainer>();
         for (HitContainer cnt : hits) {
@@ -921,13 +660,9 @@ public class KmerGutsJava {
             functionIndexFile = functionIndexGzFile;
         }
         List<String> functionArray = loadFunctions(functionIndexFile);
-        FastaReader fr = new FastaReader(contigsFile);
-        while (true) {
-            String[] entry = fr.read();
-            if (entry == null)
-                break;
-            String id = entry[0];
-            int seqLen = entry[1].length();
+        for (Query q : input) {
+            String id = q.id;
+            int seqLen = q.seq.length();
             if (aa) {
                 processAASeq(id, seqLen, hitCnts, functionArray, pw);
             } else {
@@ -959,38 +694,10 @@ public class KmerGutsJava {
         }
     }
     
-    private List<HitContainer> lookup(File kmerTableFile, File contigsPath) throws Exception {
-        List<QueryKmer> values = new ArrayList<QueryKmer>();
+    private List<HitContainer> lookup(File kmerTableFile, List<Query> input,
+            PrintWriter pw) throws Exception {
         List<HitContainer> hitCnts = new ArrayList<HitContainer>();
-        FastaReader fr = new FastaReader(contigsPath);
-        while (true) {
-            String[] entry = fr.read();
-            if (entry == null)
-                break;
-            String id = entry[0];
-            char[] seq = entry[1].toCharArray();
-            if (aa) {
-                byte[] pIseq = new byte[seq.length];
-                for (int i = 0; i < seq.length; i++) {
-                    pIseq[i] = toAminoAcidOff(seq[i]);
-                }
-            } else {
-                int len = seq.length / 3 + 1;
-                char[] pseq = new char[len];
-                byte[] pIseq = new byte[len];
-                for (int frame = 0; frame < 3; frame++) {
-                    translate(seq, frame, pseq, pIseq);
-                    addKmers(id, '+', frame, pseq, pIseq, values, hitCnts);
-                }
-                char[] complSeq = revComp(seq);
-                for (int frame = 0; frame < 3; frame++) {
-                    translate(complSeq, frame, pseq, pIseq);
-                    addKmers(id, '-', frame, pseq, pIseq, values, hitCnts);
-                }
-            }
-        }
-        fr.close();
-        System.out.println("Value count: " + values.size());
+        List<QueryKmer> values = prepareQueries(input, hitCnts);
         InputStream is;
         if (kmerTableFile.getName().endsWith(".gz")) {
             is = new BufferedInputStream(new GZIPInputStream(new BufferedInputStream(new FileInputStream(kmerTableFile))));
@@ -1000,23 +707,11 @@ public class KmerGutsJava {
         long numSigs = readLongLE(is);
         long entrySize = readLongLE(is);
         long version = readLongLE(is);
-        System.out.println("numSigs=" + numSigs + ", entrySize=" + entrySize + ", version=" + version);
-        // Update hash-codes in queries and sort them by these hash-codes
-        for (QueryKmer qk : values) {
-            qk.hashCode = qk.value % numSigs;
+        if (debug) {
+            pw.println("numSigs=" + numSigs + ", entrySize=" + entrySize + ", version=" + version);
         }
-        // Sort query kmers by hash-codes (to be able to process them in parrallel with
-        // processing kmer-table file (sorted joining).
-        Collections.sort(values, new Comparator<QueryKmer>() {
-            @Override
-            public int compare(QueryKmer o1, QueryKmer o2) {
-                int ret = Long.compare(o1.hashCode, o2.hashCode);
-                if (ret == 0) {
-                    ret = Long.compare(o1.value, o2.value);
-                }
-                return ret;
-            }
-        });
+        // Let's update hash-codes of kmers and sort queries by hash-codes:
+        updateHashCodeAndSort(values, numSigs);
             
         long t1 = System.currentTimeMillis();
         int kmersFound = 0;
@@ -1055,19 +750,7 @@ public class KmerGutsJava {
                 }
                 // Let's position kmer-table stream to necessary hash-code
                 if (neededHashCode > curHashCode) {
-                    long bytesToSkip = entrySize * (long)(neededHashCode - curHashCode);
-                    if (bytesToSkip > 0) {
-                        long bytesLeft = bytesToSkip;
-                        for (int iter = 0; bytesLeft > 0 && iter < 100; iter++) {
-                            long ret = is.skip(bytesLeft);
-                            if (ret < 0)
-                                break;
-                            bytesLeft -= ret;
-                        }
-                        if (bytesLeft != 0) {
-                            throw new IllegalStateException("Error skipping " + bytesToSkip + " bytes");
-                        }
-                    }
+                    skipBytesFully(is, entrySize * (long)(neededHashCode - curHashCode));
                     curHashCode = neededHashCode;
                 }
                 long whichKmer = readLongLE(is);
@@ -1081,10 +764,6 @@ public class KmerGutsJava {
                     // Matching kmers from query and from kmer-table
                     if (inProgress.containsKey(whichKmer)) {
                         kmersFound++;
-                        //long slot = whichKmer % numSigs;
-                        //System.out.println("[" + curHashCode + "] whichKmer=" + whichKmer + " (" + slot + "), otuIndex=" + otuIndex + ", " +
-                        //        "avgFromEnd=" + avgFromEnd + ", functionIndex=" + functionIndex + ", " +
-                        //        "functionWt=" + functionWt);
                         for (QueryKmer qk : inProgress.remove(whichKmer)) {
                             Hit hit = new Hit();
                             hit.from0InProt = qk.protPos;
@@ -1101,9 +780,11 @@ public class KmerGutsJava {
                 int newFraction = (int)(100.0 * ((double)curHashCode / (double)numSigs));
                 if (newFraction != fraction) {
                     fraction = newFraction;
-                    System.out.println("Processed: " + (fraction) + "%, time=" +
+                    if (debug) {
+                        pw.println("Processed: " + (fraction) + "%, time=" +
                             (System.currentTimeMillis() - t1) + " ms., found-so-far=" + 
                             kmersFound);
+                    }
                 }
             }
         } catch (Exception ex) {
@@ -1111,113 +792,77 @@ public class KmerGutsJava {
         } finally {
             is.close();
         }
-        System.out.println("Kmers found: " + kmersFound + " (pos-count=" + posCount + ")");
-        System.out.println("Time: " + (System.currentTimeMillis() - t1) + " ms.");
+        if (debug) {
+            pw.println("Kmers found: " + kmersFound + " (pos-count=" + posCount + ")");
+            pw.println("Lookup time: " + (System.currentTimeMillis() - t1) + " ms.");
+        }
         return hitCnts;
     }
 
-    /*public static void main(String[] args) throws Exception {
-        if (args.length != 2) {
-            System.err.println("Usage: <program> <kmer-table> <contigs-fasta>");
-            System.exit(1);
-        }
-        FastaReader fr = new FastaReader(new File(args[1]));
-        Map<Long, QueryKmer> queryMap = new HashMap<Long, QueryKmer>();
-        while (true) {
-            String[] entry = fr.read();
-            if (entry == null)
-                break;
-            char[] seq = entry[1].toCharArray();
-            int len = seq.length / 3 + 1;
-            char[] pseq = new char[len];
-            byte[] pIseq = new byte[len];
-            translate(seq, 0, pseq, pIseq);
-            for (int i = 0; i < len - 10; i++) {
-                long value = encoded_kmer(pIseq, i);
-                if (value < 0)
-                    continue;
-                QueryKmer qk = queryMap.get(value);
-                if (qk == null) {
-                    qk = new QueryKmer();
-                    qk.value = value;
-                    qk.posList = new ArrayList<QueryPos>(1);
-                    queryMap.put(value, qk);
-                }
-                QueryPos qp = new QueryPos();
-                qp.queryId = entry[0];
-                qp.pos = i;
-                qk.posList.add(qp);
+    private static void skipBytesFully(InputStream is, long bytesToSkip) throws IOException {
+        if (bytesToSkip > 0) {
+            long bytesLeft = bytesToSkip;
+            for (int iter = 0; bytesLeft > 0 && iter < 100; iter++) {
+                long ret = is.skip(bytesLeft);
+                if (ret < 0)
+                    break;
+                bytesLeft -= ret;
+            }
+            if (bytesLeft != 0) {
+                throw new IllegalStateException("Error skipping " + bytesToSkip + " bytes");
             }
         }
-        List<QueryKmer> values = new ArrayList<QueryKmer>(queryMap.values());
-        System.out.println("Value count: " + values.size());
-        RandomAccessFile is = new RandomAccessFile(new File(args[0]), "r");
-        long t1 = System.currentTimeMillis();
-        int kmersFound = 0;
-        try {
-            long numSigs = readLongLE(is);
-            long entrySize = readLongLE(is);
-            long version = readLongLE(is);
-            System.out.println("numSigs=" + numSigs + ", entrySize=" + entrySize + ", version=" + version);
-            // Update hash-codes in queries and sort them by these hash-codes
-            for (QueryKmer qk : values) {
-                qk.hashCode = qk.value % numSigs;
-            }
-            Collections.sort(values, new Comparator<QueryKmer>() {
-                @Override
-                public int compare(QueryKmer o1, QueryKmer o2) {
-                    int ret = Long.compare(o1.hashCode, o2.hashCode);
-                    if (ret == 0) {
-                        ret = Long.compare(o1.value, o2.value);
-                    }
-                    return ret;
-                }
-            });
-            int fraction = 0;
-            for (QueryKmer qk : values) {
-                int newFraction = (int)(10000.0 * ((double)qk.hashCode / (double)numSigs));
-                if (newFraction != fraction) {
-                    fraction = newFraction;
-                    System.out.println("Processed: " + (fraction / 100.0) + "%, time=" +
-                            (System.currentTimeMillis() - t1) + " ms.");
-                }
-                long pos = 8 * 3 + qk.hashCode * entrySize;
-                is.seek(pos);
-                for (long curHashCode = qk.hashCode; ; curHashCode++) {
-                    long whichKmer = readLongLE(is);
-                    int otuIndex = readIntLE(is);
-                    int avgFromEnd = readIntLE(is);
-                    int functionIndex = readIntLE(is);
-                    float functionWt = readFloatLE(is);
-                    long slot = whichKmer % numSigs;
-                    if (whichKmer > MAX_ENCODED) {
-                        break;
-                    } else {
-                        if (whichKmer == qk.value) {
-                            System.out.println("[" + curHashCode + "] whichKmer=" + whichKmer + " (" + slot + "), otuIndex=" + otuIndex + ", " +
-                                    "avgFromEnd=" + avgFromEnd + ", functionIndex=" + functionIndex + ", " +
-                                    "functionWt=" + functionWt);
-                            sig_kmer hit = new sig_kmer();
-                            hit.which_kmer = whichKmer;
-                            hit.otu_index = otuIndex;
-                            hit.avg_from_end = avgFromEnd;
-                            hit.function_index = functionIndex;
-                            hit.function_wt = functionWt;
-                            qk.hit = hit;
-                            kmersFound++;
-                            break;
-                        }
-                    }
-                }
-            }
-        } finally {
-            is.close();
-            System.out.println("Kmers found: " + kmersFound);
-            System.out.println("Time: " + (System.currentTimeMillis() - t1) + " ms.");
-        }
-    }*/
+    }
 
-    public static int readIntLE(InputStream is) throws IOException {
+    private List<QueryKmer> prepareQueries(List<Query> input,
+            List<HitContainer> hitCnts) {
+        List<QueryKmer> values = new ArrayList<QueryKmer>();
+        for (Query q : input) {
+            String id = q.id;
+            char[] seq = q.seq.toCharArray();
+            if (aa) {
+                byte[] pIseq = new byte[seq.length];
+                for (int i = 0; i < seq.length; i++) {
+                    pIseq[i] = toAminoAcidOff(seq[i]);
+                }
+            } else {
+                int len = seq.length / 3 + 1;
+                char[] pseq = new char[len];
+                byte[] pIseq = new byte[len];
+                for (int frame = 0; frame < 3; frame++) {
+                    translate(seq, frame, pseq, pIseq);
+                    addKmers(id, '+', frame, pseq, pIseq, values, hitCnts);
+                }
+                char[] complSeq = revComp(seq);
+                for (int frame = 0; frame < 3; frame++) {
+                    translate(complSeq, frame, pseq, pIseq);
+                    addKmers(id, '-', frame, pseq, pIseq, values, hitCnts);
+                }
+            }
+        }
+        return values;
+    }
+
+    private static void updateHashCodeAndSort(List<QueryKmer> values, long numSigs) {
+        // Update hash-codes in queries and sort them by these hash-codes
+        for (QueryKmer qk : values) {
+            qk.hashCode = qk.value % numSigs;
+        }
+        // Sort query kmers by hash-codes (to be able to process them in parrallel with
+        // processing kmer-table file (sorted joining).
+        Collections.sort(values, new Comparator<QueryKmer>() {
+            @Override
+            public int compare(QueryKmer o1, QueryKmer o2) {
+                int ret = Long.compare(o1.hashCode, o2.hashCode);
+                if (ret == 0) {
+                    ret = Long.compare(o1.value, o2.value);
+                }
+                return ret;
+            }
+        });
+    }
+
+    private static int readIntLE(InputStream is) throws IOException {
         int ch1 = is.read();
         int ch2 = is.read();
         int ch3 = is.read();
@@ -1227,7 +872,7 @@ public class KmerGutsJava {
         return ((ch1 << 0) + (ch2 << 8) + (ch3 << 16) + (ch4 << 24));
     }
 
-    public static long readLongLE(InputStream is) throws IOException {
+    private static long readLongLE(InputStream is) throws IOException {
         int ch1 = is.read();
         int ch2 = is.read();
         int ch3 = is.read();
@@ -1248,72 +893,14 @@ public class KmerGutsJava {
                 ((long)ch8 << 56));
     }
 
-    public static float readFloatLE(InputStream is) throws IOException {
+    private static float readFloatLE(InputStream is) throws IOException {
         return Float.intBitsToFloat(readIntLE(is));
     }
-
-    public static int readIntLE(RandomAccessFile is) throws IOException {
-        int ch1 = is.read();
-        int ch2 = is.read();
-        int ch3 = is.read();
-        int ch4 = is.read();
-        if ((ch1 | ch2 | ch3 | ch4) < 0)
-            throw new EOFException();
-        return ((ch1 << 0) + (ch2 << 8) + (ch3 << 16) + (ch4 << 24));
-    }
-
-    public static long readLongLE(RandomAccessFile is) throws IOException {
-        return (((long)(is.read() & 255) << 0) +
-                ((long)(is.read() & 255) << 8) +
-                ((long)(is.read() & 255) << 16) +
-                ((long)(is.read() & 255) << 24) +
-                ((long)(is.read() & 255) << 32) +
-                ((long)(is.read() & 255) << 40) +
-                ((long)(is.read() & 255) << 48) +
-                ((long)is.read() << 56));
-    }
-
-    public static float readFloatLE(RandomAccessFile is) throws IOException {
-        return Float.intBitsToFloat(readIntLE(is));
-    }
-
-    public static class FastaReader {
-        BufferedReader br;
+    
+    private static List<Query> readFasta(BufferedReader br) throws Exception {
+        List<Query> ret = new ArrayList<>();
         String str1 = null;
-
-        public FastaReader(File f) {
-            try {
-                br = new BufferedReader(new FileReader(f));
-            } catch(Exception ex) {
-                throw new RuntimeException("Wrong file name: " + f, ex);
-            }
-        }
-
-        public FastaReader(Reader r) {
-            br = new BufferedReader(r);
-        }
-
-        public static Map<String, String> readFromFile(File f) {
-            FastaReader fr = new FastaReader(f);
-            Map<String, String> ret = fr.readAll();
-            fr.close();
-            return ret;
-        }
-
-        public Map<String, String> readAll() {
-            Map<String, String> ret = new LinkedHashMap<String, String>();
-            while (true) {
-                String[] entry = read();
-                if (entry == null)
-                    break;
-                ret.put(entry[0], entry[1]);
-            }
-            return ret;
-        }
-
-        public String[] read() {
-            if(br == null)
-                return null;
+        while (true) {
             String protName = null;
             String protSeq = null;
             String protDescr = null;
@@ -1322,7 +909,7 @@ public class KmerGutsJava {
                     str1 = br.readLine();
                 for(;;) {
                     if(str1 == null)
-                        return null;
+                        break;
                     String str2 = str1.trim();
                     if(str2.length() > 1) {
                         if (str2.charAt(0) == '>' && str2.substring(1).trim().length() > 0) {
@@ -1341,6 +928,9 @@ public class KmerGutsJava {
                         }
                     }
                     str1 = br.readLine();
+                }
+                if (protName == null) {
+                    break;
                 }
                 StringBuilder sb = new StringBuilder();
                 for(;;) {
@@ -1361,23 +951,24 @@ public class KmerGutsJava {
                 if (protSeq.length()==0) {
                     throw new IllegalStateException("No sequence for caption: " + protName);
                 }
-                return new String[] {protName, protSeq, protDescr};
+                Query q = new Query();
+                q.id = protName;
+                q.descr = protDescr;
+                q.seq = protSeq;
+                ret.add(q);
             } catch (IllegalStateException ex) {
                 throw ex;
             } catch (Exception ex) {
                 throw new IllegalStateException(ex);
             }
         }
-        public void close() {
-            if(br == null)
-                return;
-            try {
-                br.close();
-            }catch(Exception ex) {
-                System.err.println("WARNING: couldn't close fasta reader, ignored");
-            }
-            br = null;
-        }
+        return ret;
+    }
+    
+    public static class Query {
+        public String id;
+        public String descr;
+        public String seq;
     }
     
     public static class QueryKmer {
@@ -1397,7 +988,7 @@ public class KmerGutsJava {
     public static class Hit {
         public int oI;
         public int from0InProt;      /* offset from start of protein sequence */
-        public int avgOffFromEnd;  /* average offset from the end */
+        public int avgOffFromEnd;    /* average offset from the end */
         public int fI;
         public float functionWt;
     }

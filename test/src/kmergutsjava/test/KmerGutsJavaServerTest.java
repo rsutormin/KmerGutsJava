@@ -75,6 +75,13 @@ public class KmerGutsJavaServerTest {
     
     @Test
     public void testYourMethod() throws Exception {
-        KmerGutsJava.main(new String[] {"/data", "/kb/module/test/data/kmer_test.fna"});
+        try {
+            KmerGutsJava.main(new String[] {"-m", "5", 
+                    "-g", "200", "-D", "/data", 
+                    "-q", "/kb/module/test/data/kmer_test.fna",
+                    "-o", "/kb/module/work/output.txt"});
+        } catch (Exception ex) {
+            ex.printStackTrace();
+        }
     }
 }
