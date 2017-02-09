@@ -1,9 +1,11 @@
 package kmergutsjava;
 
 import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
 import java.io.EOFException;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -23,18 +25,14 @@ import java.util.StringTokenizer;
 import java.util.zip.GZIPInputStream;
 
 /*
-
-kmer_guts.c can be compiled into either a 5-mer or an 8-mer version.  I have 
-labeled the critical changes with 
-
-     ### CHANGE THIS FOR DIFFERING Ks ###
-
-Note: to run use
+This is Java version of kmer_guts.c program (http://biocvs.mcs.anl.gov/viewcvs.cgi/Kmers2/kmer_guts.c?revision=1.34&content-type=text%2Fplain)
+Usage example:
 
    kmer_guts -D KmerData < input.contigs
-   kmer_guts -D KmerData -a  < amino_acid_sequences.fasta > hits
 
-can be used to call translated PEGs.
+It can also be used to call translated PEGs:
+
+   kmer_guts -D KmerData -a  < amino_acid_sequences.fasta > hits
 
 where KmersData is a directory that must contain
 
@@ -105,6 +103,7 @@ public class KmerGutsJava {
     private int minWeightedHits = 0;
     private int maxGap  = 200;
     private boolean debug = false;
+    private long inputSizeLimit = 10 * 1024 * 1024; // 10 megabases
 
     public static byte toAminoAcidOff(char c) {
         switch (c)
@@ -618,12 +617,15 @@ public class KmerGutsJava {
         }
         PrintWriter pw = null;
         try {
+            boolean stdout;
             if (outputFile != null) {
                 pw = new PrintWriter(new FileWriter(new File(outputFile)));
+                stdout = false;
             } else {
                 pw = new PrintWriter(System.out);
+                stdout = true;
             }
-            instance.run(new File(kmerTableDir), new File(queryFastaFile), pw);
+            instance.run(new File(kmerTableDir), new File(queryFastaFile), pw, stdout);
             pw.flush();
         } finally {
             if (outputFile != null) {
@@ -632,27 +634,101 @@ public class KmerGutsJava {
         }
     }
     
-    public void run(File kmerTableDir, File queryFastaFile, PrintWriter pw) throws Exception {
+    private static void writeQueryKmer(QueryKmer item, DataOutputStream dos) throws Exception {
+        dos.writeLong(item.value);
+        dos.writeInt(item.hitCntId);
+        dos.writeInt(item.protPos);
+    }
+
+    private static QueryKmer readQueryKmer(DataInputStream dis) throws Exception {
+        QueryKmer ret = new QueryKmer();
+        try {
+            ret.value = dis.readLong();
+            ret.hitCntId = dis.readInt();
+            ret.protPos = dis.readInt();
+            return ret;
+        } catch (EOFException ex) {
+            return null;
+        }
+    }
+
+    private static void dumpQueryKmersToFile(List<QueryKmer> data, File f) throws Exception {
+        DataOutputStream dos = new DataOutputStream(new BufferedOutputStream(
+                new FileOutputStream(f)));
+        for (QueryKmer item : data) {
+            writeQueryKmer(item, dos);
+        }
+        dos.close();
+    }
+    
+    private static void mergeTwoQueryKmerFiles(File f1, File f2, long numSig, File output) throws Exception {
+        DataInputStream d1 = new DataInputStream(new BufferedInputStream(
+                new FileInputStream(f1)));
+        DataInputStream d2 = new DataInputStream(new BufferedInputStream(
+                new FileInputStream(f2)));
+        DataOutputStream dos = new DataOutputStream(new BufferedOutputStream(
+                new FileOutputStream(output)));
+        try {
+            QueryKmer k1 = readQueryKmer(d1);
+            QueryKmer k2 = readQueryKmer(d2);
+            while (k1 != null && k2 != null) {
+                long code1 = k1.value % numSig;
+                long code2 = k2.value % numSig;
+                int cmp = Long.compare(code1, code2);
+                if (cmp == 0) {
+                    cmp = Long.compare(k1.value, k2.value);
+                }
+                if (cmp <= 0) {
+                    writeQueryKmer(k1, dos);
+                    k1 = readQueryKmer(d1);
+                } else {
+                    writeQueryKmer(k2, dos);
+                    k2 = readQueryKmer(d2);
+                }
+            }
+            if (k1 != null) {
+                writeQueryKmer(k1, dos);
+            } else if (k2 != null) {
+                writeQueryKmer(k2, dos);
+            }
+        } finally {
+            d1.close();
+            d2.close();
+            dos.close();
+        }
+    }
+    
+    private static File mergeQueryKmerFiles(List<File> files, File tempDir, long numSig) throws Exception {
+        Queue<File> filesForProcessing = new LinkedList<File>(files);
+        while (filesForProcessing.size() > 1) {
+            Queue<File> filesForProcessingNext = new LinkedList<File>();
+            while (!filesForProcessing.isEmpty()) {
+                File f1 = filesForProcessing.poll();
+                if (filesForProcessing.peek() != null) {
+                    File f2 = filesForProcessing.poll();
+                    int chunkNum = files.size();
+                    File output = new File(tempDir, "query_kmers_" + chunkNum + ".dat");
+                    mergeTwoQueryKmerFiles(f1, f2, numSig, output);
+                    f1.delete();
+                    f2.delete();
+                    files.add(output);
+                    filesForProcessingNext.add(output);
+                } else {
+                    filesForProcessingNext.add(f1);
+                }
+            }
+            filesForProcessing = filesForProcessingNext;
+        }
+        return filesForProcessing.poll();
+    }
+    
+    public void run(File kmerTableDir, File queryFastaFile, final PrintWriter pw,
+            final boolean stdout) throws Exception {
+        final File tempDir = new File(".");
         File kmerTableFile = new File(kmerTableDir, "kmer.table.mem_map");
         File kmerTableGzFile = new File(kmerTableDir, kmerTableFile.getName() + ".gz");
         if (kmerTableGzFile.exists()) {
             kmerTableFile = kmerTableGzFile;
-        }
-        BufferedReader inputBr;
-        if (queryFastaFile == null) {
-            inputBr = new BufferedReader(new InputStreamReader(System.in));
-        } else {
-            inputBr = new BufferedReader(new FileReader(queryFastaFile));
-        }
-        List<Query> input = readFasta(inputBr);
-        if (queryFastaFile != null) {
-            inputBr.close();
-        }
-        List<HitContainer> hits = lookup(kmerTableFile, input, pw);
-        Map<HitContainerKey, HitContainer> hitCnts = 
-                new LinkedHashMap<HitContainerKey, HitContainer>();
-        for (HitContainer cnt : hits) {
-            hitCnts.put(cnt.key, cnt);
         }
         File functionIndexFile = new File(kmerTableDir, "function.index");
         File functionIndexGzFile = new File(kmerTableDir, functionIndexFile.getName() + ".gz");
@@ -660,15 +736,90 @@ public class KmerGutsJava {
             functionIndexFile = functionIndexGzFile;
         }
         List<String> functionArray = loadFunctions(functionIndexFile);
-        for (Query q : input) {
-            String id = q.id;
-            int seqLen = q.seq.length();
+        BufferedReader inputBr;
+        if (queryFastaFile == null) {
+            inputBr = new BufferedReader(new InputStreamReader(System.in));
+        } else {
+            inputBr = new BufferedReader(new FileReader(queryFastaFile));
+        }
+        final List<Query> queryList = new ArrayList<Query>();
+        final List<HitContainer> hits = new ArrayList<HitContainer>();
+        final List<QueryKmer> queryKmers = new ArrayList<QueryKmer>();
+        final Map<String, Integer> queryIdToLen = new LinkedHashMap<String, Integer>();
+        final KmerMemoryInfo header = new KmerMemoryInfo();
+        InputStream kmerTableStream = readKmerTableHeader(kmerTableFile, header);
+        final List<File> queryFiles = new ArrayList<File>();
+        long t1 = System.currentTimeMillis();
+        readFasta(inputBr, new FastaCallback() {
+            private long loadedSoFar = 0;
+            @Override
+            public void nextEntry(String id, String seq, String descr) throws Exception {
+                Query q = new Query();
+                q.id = id;
+                q.seq = seq;
+                q.descr = descr;
+                queryList.add(q);
+                queryIdToLen.put(id, seq.length());
+                loadedSoFar += seq.length();
+                if (loadedSoFar > inputSizeLimit) {
+                    flushChunk();
+                }
+            }
+            @Override
+            public void done() throws Exception {
+                if (queryList.size() > 0) {
+                    flushChunk();
+                }
+            }
+            private void flushChunk() throws Exception {
+                int chunkNum = queryFiles.size();
+                prepareQueries(queryList, queryKmers, hits);
+                // Let's update hash-codes of kmers and sort queries by hash-codes:
+                updateHashCodeAndSort(queryKmers, header.numSigs);
+                File tempFile = new File(tempDir, "query_kmers_" + chunkNum + ".dat");
+                dumpQueryKmersToFile(queryKmers, tempFile);
+                queryFiles.add(tempFile);
+                queryKmers.clear();
+                queryList.clear();
+                loadedSoFar = 0;
+            }
+        });
+        if (queryFastaFile != null) {
+            inputBr.close();
+        }
+        File mergedQueryKmerFile = mergeQueryKmerFiles(queryFiles, tempDir, header.numSigs);
+        printInfoLine("Preparation time: " + (System.currentTimeMillis() - t1) + " ms.", pw, stdout);
+        long t2 = System.currentTimeMillis();
+        try {
+            lookup(kmerTableStream, header, queryKmers, hits, pw, stdout);
+        } catch (Exception ex) {
+            printInfoLine("Error: " + ex.getMessage(), pw, stdout);
+        }
+        printInfoLine("Lookup time: " + (System.currentTimeMillis() - t2) + " ms.", pw, stdout);
+        long t3 = System.currentTimeMillis();
+        Map<HitContainerKey, HitContainer> hitCnts = 
+                new LinkedHashMap<HitContainerKey, HitContainer>();
+        for (HitContainer cnt : hits) {
+            hitCnts.put(cnt.key, cnt);
+        }
+        for (String queryId : queryIdToLen.keySet()) {
+            int seqLen = queryIdToLen.get(queryId);
             if (aa) {
-                processAASeq(id, seqLen, hitCnts, functionArray, pw);
+                processAASeq(queryId, seqLen, hitCnts, functionArray, pw);
             } else {
-                processSeq(id, seqLen, hitCnts, functionArray, pw);
+                processSeq(queryId, seqLen, hitCnts, functionArray, pw);
             }
             pw.flush();
+        }
+        printInfoLine("Grouping time: " + (System.currentTimeMillis() - t3) + " ms.", pw, stdout);
+    }
+    
+    private void printInfoLine(String message, PrintWriter pw, boolean stdout) {
+        if (debug) {
+            pw.println(message);
+        }
+        if (!stdout) {
+            System.out.println(message);
         }
     }
     
@@ -681,6 +832,7 @@ public class KmerGutsJava {
         HitContainer hitCnt = new HitContainer();
         hitCnt.key = hcKey;
         hitCnt.hits = new ArrayList<Hit>();
+        hitCnt.id = hitCnts.size();
         hitCnts.add(hitCnt);
         for (int i = 0; i < pIseq.length - K; i++) {
             long value = encodedKmer(pIseq, i);
@@ -689,30 +841,43 @@ public class KmerGutsJava {
             QueryKmer qk = new QueryKmer();
             qk.value = value;
             qk.protPos = i;
-            qk.hitCnt = hitCnt;
+            qk.hitCntId = hitCnt.id;
             queryList.add(qk);
         }
     }
     
-    private List<HitContainer> lookup(File kmerTableFile, List<Query> input,
-            PrintWriter pw) throws Exception {
-        List<HitContainer> hitCnts = new ArrayList<HitContainer>();
-        List<QueryKmer> values = prepareQueries(input, hitCnts);
+    private InputStream readKmerTableHeader(File kmerTableFile, 
+            KmerMemoryInfo ret) throws Exception {
         InputStream is;
         if (kmerTableFile.getName().endsWith(".gz")) {
-            is = new BufferedInputStream(new GZIPInputStream(new BufferedInputStream(new FileInputStream(kmerTableFile))));
+            is = new BufferedInputStream(new GZIPInputStream(new BufferedInputStream(
+                    new FileInputStream(kmerTableFile))));
         } else {
             is = new BufferedInputStream(new FileInputStream(kmerTableFile));
         }
         long numSigs = readLongLE(is);
         long entrySize = readLongLE(is);
         long version = readLongLE(is);
-        if (debug) {
-            pw.println("numSigs=" + numSigs + ", entrySize=" + entrySize + ", version=" + version);
+        if (ret != null) {
+            ret.numSigs = numSigs;
+            ret.entrySize = entrySize;
+            ret.version = version;
         }
-        // Let's update hash-codes of kmers and sort queries by hash-codes:
-        updateHashCodeAndSort(values, numSigs);
-            
+        return is;
+    }
+    
+    private void lookup(InputStream kmerTableStream, KmerMemoryInfo header, 
+            List<QueryKmer> values, List<HitContainer> hitCnts, 
+            PrintWriter pw, boolean stdout) throws Exception {
+        InputStream is = kmerTableStream;
+        long numSigs = header.numSigs;
+        long entrySize = header.entrySize;
+        long version = header.version;
+        if (debug) {
+            pw.println("Kmer-table info: numSigs=" + numSigs + ", entrySize=" + entrySize + 
+                    ", version=" + version);
+        }
+        
         long t1 = System.currentTimeMillis();
         int kmersFound = 0;
         int posCount = 0;
@@ -727,7 +892,7 @@ public class KmerGutsJava {
                 if (inProgress.size() == 0) {
                     // Update next hash-code
                     QueryKmer qk = values.get(curQueryPos);
-                    neededHashCode = qk.hashCode;
+                    neededHashCode = qk.value % numSigs;
                     List<QueryKmer> list = new ArrayList<QueryKmer>(5);
                     list.add(qk);
                     inProgress.put(qk.value, list);
@@ -736,7 +901,7 @@ public class KmerGutsJava {
                 // Let's push all queries with necessary hash-code into progress state
                 while (curQueryPos < values.size()) {
                     QueryKmer qk = values.get(curQueryPos);
-                    if (qk.hashCode != neededHashCode) {
+                    if ((qk.value % numSigs) != neededHashCode) {
                         break;
                     }
                     if (inProgress.containsKey(qk.value)) {
@@ -771,7 +936,7 @@ public class KmerGutsJava {
                             hit.avgOffFromEnd = avgFromEnd;
                             hit.fI = functionIndex;
                             hit.functionWt = functionWt;
-                            qk.hitCnt.hits.add(hit);
+                            hitCnts.get(qk.hitCntId).hits.add(hit);
                             posCount++;
                         }
                     }
@@ -780,23 +945,17 @@ public class KmerGutsJava {
                 int newFraction = (int)(100.0 * ((double)curHashCode / (double)numSigs));
                 if (newFraction != fraction) {
                     fraction = newFraction;
-                    if (debug) {
-                        pw.println("Processed: " + (fraction) + "%, time=" +
+                    printInfoLine("Processed: " + (fraction) + "%, time=" +
                             (System.currentTimeMillis() - t1) + " ms., found-so-far=" + 
-                            kmersFound);
-                    }
+                            kmersFound, pw, stdout);
                 }
             }
-        } catch (Exception ex) {
-            ex.printStackTrace();
         } finally {
             is.close();
         }
         if (debug) {
             pw.println("Kmers found: " + kmersFound + " (pos-count=" + posCount + ")");
-            pw.println("Lookup time: " + (System.currentTimeMillis() - t1) + " ms.");
         }
-        return hitCnts;
     }
 
     private static void skipBytesFully(InputStream is, long bytesToSkip) throws IOException {
@@ -814,9 +973,8 @@ public class KmerGutsJava {
         }
     }
 
-    private List<QueryKmer> prepareQueries(List<Query> input,
+    private void prepareQueries(List<Query> input, List<QueryKmer> queryKmers,
             List<HitContainer> hitCnts) {
-        List<QueryKmer> values = new ArrayList<QueryKmer>();
         for (Query q : input) {
             String id = q.id;
             char[] seq = q.seq.toCharArray();
@@ -831,29 +989,26 @@ public class KmerGutsJava {
                 byte[] pIseq = new byte[len];
                 for (int frame = 0; frame < 3; frame++) {
                     translate(seq, frame, pseq, pIseq);
-                    addKmers(id, '+', frame, pseq, pIseq, values, hitCnts);
+                    addKmers(id, '+', frame, pseq, pIseq, queryKmers, hitCnts);
                 }
                 char[] complSeq = revComp(seq);
                 for (int frame = 0; frame < 3; frame++) {
                     translate(complSeq, frame, pseq, pIseq);
-                    addKmers(id, '-', frame, pseq, pIseq, values, hitCnts);
+                    addKmers(id, '-', frame, pseq, pIseq, queryKmers, hitCnts);
                 }
             }
         }
-        return values;
     }
 
-    private static void updateHashCodeAndSort(List<QueryKmer> values, long numSigs) {
-        // Update hash-codes in queries and sort them by these hash-codes
-        for (QueryKmer qk : values) {
-            qk.hashCode = qk.value % numSigs;
-        }
+    private static void updateHashCodeAndSort(List<QueryKmer> values, final long numSigs) {
         // Sort query kmers by hash-codes (to be able to process them in parrallel with
         // processing kmer-table file (sorted joining).
         Collections.sort(values, new Comparator<QueryKmer>() {
             @Override
             public int compare(QueryKmer o1, QueryKmer o2) {
-                int ret = Long.compare(o1.hashCode, o2.hashCode);
+                long hashCode1 = o1.value % numSigs;
+                long hashCode2 = o2.value % numSigs;
+                int ret = Long.compare(hashCode1, hashCode2);
                 if (ret == 0) {
                     ret = Long.compare(o1.value, o2.value);
                 }
@@ -897,8 +1052,7 @@ public class KmerGutsJava {
         return Float.intBitsToFloat(readIntLE(is));
     }
     
-    private static List<Query> readFasta(BufferedReader br) throws Exception {
-        List<Query> ret = new ArrayList<>();
+    private static void readFasta(BufferedReader br, FastaCallback ret) throws Exception {
         String str1 = null;
         while (true) {
             String protName = null;
@@ -951,18 +1105,20 @@ public class KmerGutsJava {
                 if (protSeq.length()==0) {
                     throw new IllegalStateException("No sequence for caption: " + protName);
                 }
-                Query q = new Query();
-                q.id = protName;
-                q.descr = protDescr;
-                q.seq = protSeq;
-                ret.add(q);
+                ret.nextEntry(protName, protSeq, protDescr);
             } catch (IllegalStateException ex) {
                 throw ex;
             } catch (Exception ex) {
                 throw new IllegalStateException(ex);
             }
         }
-        return ret;
+        ret.done();
+    }
+    
+    public static class KmerMemoryInfo {
+        public long numSigs;
+        public long entrySize;
+        public long version;
     }
     
     public static class Query {
@@ -973,9 +1129,8 @@ public class KmerGutsJava {
     
     public static class QueryKmer {
         public long value;
-        public long hashCode;
+        public int hitCntId;
         public int protPos;
-        public HitContainer hitCnt;
     }
     
     public static class QueryPos {
@@ -1036,6 +1191,12 @@ public class KmerGutsJava {
     
     public static class HitContainer {
         public HitContainerKey key;
+        public int id;
         public List<Hit> hits;
+    }
+    
+    public static interface FastaCallback {
+        public void nextEntry(String id, String seq, String descr) throws Exception;
+        public void done() throws Exception;
     }
 }
