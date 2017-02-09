@@ -740,7 +740,12 @@ public class KmerGutsJava {
         if (queryFastaFile == null) {
             inputBr = new BufferedReader(new InputStreamReader(System.in));
         } else {
-            inputBr = new BufferedReader(new FileReader(queryFastaFile));
+            if (queryFastaFile.getName().endsWith(".gz")) {
+                inputBr = new BufferedReader(new InputStreamReader(new GZIPInputStream(
+                        new BufferedInputStream(new FileInputStream(queryFastaFile)))));
+            } else {
+                inputBr = new BufferedReader(new FileReader(queryFastaFile));
+            }
         }
         final List<Query> queryList = new ArrayList<Query>();
         final List<HitContainer> hits = new ArrayList<HitContainer>();
@@ -987,6 +992,7 @@ public class KmerGutsJava {
                 for (int i = 0; i < seq.length; i++) {
                     pIseq[i] = toAminoAcidOff(seq[i]);
                 }
+                addKmers(id, '+', 0, seq, pIseq, queryKmers, hitCnts);
             } else {
                 int len = seq.length / 3 + 1;
                 char[] pseq = new char[len];
@@ -1203,4 +1209,10 @@ public class KmerGutsJava {
         public void nextEntry(String id, String seq, String descr) throws Exception;
         public void done() throws Exception;
     }
+    
+    /*public static interface QueryKmerSorter {
+        public void addKmer(QueryKmer qk) throws Exception;
+        public void finalizeSorting() throws Exception;
+        public QueryKmer loadNext() throws Exception;
+    }*/
 }

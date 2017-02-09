@@ -77,8 +77,8 @@ public class KmerGutsJavaServerTest {
     public void testYourMethod() throws Exception {
         try {
             KmerGutsJava.main(new String[] {"-m", "5", 
-                    "-g", "200", "-D", "/data", 
-                    "-q", "/kb/module/test/data/kmer_test.fna",
+                    "-g", "200", "-D", "/data",
+                    "-q", "/kb/module/test/data/Ecoli_K12_W3110.fna.gz",
                     "-o", "/kb/module/work/output.txt"});
         } catch (Exception ex) {
             ex.printStackTrace();
