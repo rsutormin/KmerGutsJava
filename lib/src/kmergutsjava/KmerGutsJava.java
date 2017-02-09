@@ -791,8 +791,9 @@ public class KmerGutsJava {
         printInfoLine("Preparation time: " + (System.currentTimeMillis() - t1) + " ms.", pw, stdout);
         long t2 = System.currentTimeMillis();
         try {
-            lookup(kmerTableStream, header, queryKmers, hits, pw, stdout);
+            lookup(kmerTableStream, header, mergedQueryKmerFile, hits, pw, stdout);
         } catch (Exception ex) {
+            ex.printStackTrace();
             printInfoLine("Error: " + ex.getMessage(), pw, stdout);
         }
         printInfoLine("Lookup time: " + (System.currentTimeMillis() - t2) + " ms.", pw, stdout);
@@ -867,7 +868,7 @@ public class KmerGutsJava {
     }
     
     private void lookup(InputStream kmerTableStream, KmerMemoryInfo header, 
-            List<QueryKmer> values, List<HitContainer> hitCnts, 
+            File sortedQueryKmerFile, List<HitContainer> hitCnts, 
             PrintWriter pw, boolean stdout) throws Exception {
         InputStream is = kmerTableStream;
         long numSigs = header.numSigs;
@@ -881,26 +882,28 @@ public class KmerGutsJava {
         long t1 = System.currentTimeMillis();
         int kmersFound = 0;
         int posCount = 0;
+        DataInputStream queryStream = new DataInputStream(new BufferedInputStream(
+                new FileInputStream(sortedQueryKmerFile)));
         try {
             // Now we go along hash table and along query hash-codes
             long curHashCode = 0;
-            int curQueryPos = 0;
+            QueryKmer curKmer = readQueryKmer(queryStream);
             Map<Long, List<QueryKmer>> inProgress = new HashMap<Long, List<QueryKmer>>();
             int fraction = 0;
-            while (curQueryPos < values.size() || inProgress.size() > 0) {
+            while (curKmer != null || inProgress.size() > 0) {
                 long neededHashCode = curHashCode;
                 if (inProgress.size() == 0) {
                     // Update next hash-code
-                    QueryKmer qk = values.get(curQueryPos);
+                    QueryKmer qk = curKmer;
                     neededHashCode = qk.value % numSigs;
                     List<QueryKmer> list = new ArrayList<QueryKmer>(5);
                     list.add(qk);
                     inProgress.put(qk.value, list);
-                    curQueryPos++;
+                    curKmer = readQueryKmer(queryStream);
                 }
                 // Let's push all queries with necessary hash-code into progress state
-                while (curQueryPos < values.size()) {
-                    QueryKmer qk = values.get(curQueryPos);
+                while (curKmer != null) {
+                    QueryKmer qk = curKmer;
                     if ((qk.value % numSigs) != neededHashCode) {
                         break;
                     }
@@ -911,7 +914,7 @@ public class KmerGutsJava {
                         list.add(qk);
                         inProgress.put(qk.value, list);
                     }
-                    curQueryPos++;
+                    curKmer = readQueryKmer(queryStream);
                 }
                 // Let's position kmer-table stream to necessary hash-code
                 if (neededHashCode > curHashCode) {
@@ -952,6 +955,7 @@ public class KmerGutsJava {
             }
         } finally {
             is.close();
+            queryStream.close();
         }
         if (debug) {
             pw.println("Kmers found: " + kmersFound + " (pos-count=" + posCount + ")");
