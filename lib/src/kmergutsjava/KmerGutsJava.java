@@ -25,7 +25,9 @@ import java.util.StringTokenizer;
 import java.util.zip.GZIPInputStream;
 
 /*
-This is Java version of kmer_guts.c program (http://biocvs.mcs.anl.gov/viewcvs.cgi/Kmers2/kmer_guts.c?revision=1.34&content-type=text%2Fplain)
+This is Java version of kmer_guts.c program written by Ross Overbeek
+(http://biocvs.mcs.anl.gov/viewcvs.cgi/Kmers2/kmer_guts.c?revision=1.34&content-type=text%2Fplain)
+
 Usage example:
 
    kmer_guts -D KmerData < input.contigs
@@ -103,7 +105,8 @@ public class KmerGutsJava {
     private int minWeightedHits = 0;
     private int maxGap  = 200;
     private boolean debug = false;
-    private long inputSizeLimit = 20 * 1024 * 1024; // 20 megabases
+    private long inputSizeLimit = 20 * 1000 * 1000; // max. number of Kmers in memory
+    private String tempDirPath = System.getProperty("java.io.tmpdir");
 
     public static byte toAminoAcidOff(char c) {
         switch (c)
@@ -356,7 +359,8 @@ public class KmerGutsJava {
             int tabPos = line.indexOf('\t');
             int index = Integer.parseInt(line.substring(0, tabPos));
             if (linePos != index) {
-                throw new IllegalStateException("Your index must be dense and in order (see line " + linePos + ")");
+                throw new IllegalStateException("Your index must be dense and in order " +
+                		"(see line " + linePos + ")");
             }
             ret.add(line.substring(tabPos + 1));
         }
@@ -409,7 +413,8 @@ public class KmerGutsJava {
             for (int i=0; i <= lastHit; i++) {
                 if (hits.get(i).fI == currentFI) {
                     int j;
-                    for (j=0; (j < oICounts.size()) && (oICounts.get(j).oI != hits.get(i).oI); j++) {}
+                    for (j=0; (j < oICounts.size()) && 
+                            (oICounts.get(j).oI != hits.get(i).oI); j++) {}
                     if (j == oICounts.size()) {
                         if (oICounts.size() == OI_BUFSZ) {
                             j--;   // we overwrite the last entry
@@ -434,9 +439,9 @@ public class KmerGutsJava {
             }
         }
         int numHits = hits.size();
-        if ((hits.get(numHits-2).fI != currentFI) && (hits.get(numHits - 2).fI == hits.get(numHits - 1).fI)) {
+        if ((hits.get(numHits-2).fI != currentFI) && 
+                (hits.get(numHits - 2).fI == hits.get(numHits - 1).fI)) {
             currentFI = hits.get(numHits - 1).fI;
-            // now copy the last two entries to the start of the hits array.  Sorry this is so clumsy
             hits.set(0, hits.get(numHits - 2));
             hits.set(1, hits.get(numHits - 1));
             for (int i = numHits - 1; i >= 2; i--) {
@@ -469,11 +474,11 @@ public class KmerGutsJava {
                             ph.from0InProt, 0, avgOffEnd, fI, ph.functionWt, ph.oI));
                 }
 
-                if ((hits.size() > 0) && (hits.get(hits.size()-1).from0InProt + maxGap) < ph.from0InProt) {
+                if ((hits.size() > 0) && 
+                        (hits.get(hits.size()-1).from0InProt + maxGap) < ph.from0InProt) {
                     if (hits.size() >= minHits) {
                         currentFI = processSetOfHits(hits, functionArray, currentFI, oICounts, pw);
-                    }
-                    else {
+                    } else {
                         hits.clear();
                     }
                 }
@@ -484,8 +489,8 @@ public class KmerGutsJava {
 
                 if ((!orderConstraint) || (hits.size() == 0) ||
                         ((fI == hits.get(hits.size()-1).fI) &&
-                                (Math.abs(((ph.from0InProt) - hits.get(hits.size()-1).from0InProt) - 
-                                        (hits.get(hits.size()-1).avgOffFromEnd - avgOffEnd)
+                                (Math.abs(((ph.from0InProt) - hits.get(hits.size()-1).from0InProt)
+                                        - (hits.get(hits.size()-1).avgOffFromEnd - avgOffEnd)
                                         ) <= 20))) {
                     // we have a new hit, so we add it to the global set of hits
                     if (hits.size() < MAX_HITS_PER_SEQ - 2) {
@@ -495,8 +500,10 @@ public class KmerGutsJava {
                             displayHits(hits, pw);
                         }
                     }
-                    if ((hits.size() > 1) && (currentFI != fI) &&           // if we have a pair of new fIs, it is time to
-                            (hits.get(hits.size()-2).fI == hits.get(hits.size()-1).fI)) {   // process one set and initialize the next
+                    if ((hits.size() > 1) && (currentFI != fI) &&
+                            (hits.get(hits.size()-2).fI == hits.get(hits.size()-1).fI)) {
+                        // if we have a pair of new fIs, it is time to
+                        // process one set and initialize the next
                         currentFI = processSetOfHits(hits, functionArray, currentFI, oICounts, pw);
                     }
                 }
@@ -560,7 +567,8 @@ public class KmerGutsJava {
             while (!params.isEmpty()) {
                 String param = params.poll();
                 if(!param.startsWith("-")) {
-                    throw new IllegalStateException("Parameter name should start from '-': " + param);
+                    throw new IllegalStateException("Parameter name should start from '-': " + 
+                            param);
                 }
                 param = param.substring(1);
                 if (param.length() != 1) {
@@ -594,6 +602,10 @@ public class KmerGutsJava {
                 case 'o':
                     outputFile = params.poll();
                     break;
+                case 't':
+                    instance.tempDirPath = params.poll();
+                case 'l':
+                    instance.inputSizeLimit = Long.parseLong(params.poll());
                 default:
                     throw new IllegalStateException("Unknown parameter: -" + param);
                 }
@@ -607,13 +619,20 @@ public class KmerGutsJava {
             System.out.println("Arguments:");
             System.out.println(" -a - (optional) amino acids in input FASTA (default is DNA)");
             System.out.println(" -d - (optional) print debug messages");
-            System.out.println(" -m - (optional) min. number of hits in result (integer, default = )");
-            System.out.println(" -M - min. sum of hit weights");
-            System.out.println(" -O - order constraint");
-            System.out.println(" -g - max. gap between hits to be joined");
-            System.out.println(" -D - data directory with kmer-table and function-index files");
-            System.out.println(" -q - ");
-            System.out.println(" -");
+            System.out.println(" -m - (optional) min. number of hits in result (integer, " +
+            		"default = 5)");
+            System.out.println(" -M - (optional) min. sum of hit weights (integer, default = 0)");
+            System.out.println(" -O - (optional) order constraint (don't use order by default)");
+            System.out.println(" -g - (optional) max. gap between hits to be joined (integer, " +
+            		"default = 200)");
+            System.out.println(" -D - (required) data directory with kmer-table and " +
+            		"function-index files");
+            System.out.println(" -q - (optional) query fasta file (STDIN if not defined)");
+            System.out.println(" -o - (optional) output file (STDOUT if not defined)");
+            System.out.println(" -t - (optional) temporary directory (system one is used by " +
+            		"default)");
+            System.out.println(" -l - (optional) limit for input Kmer array (long, " +
+            		"default = 20,000,000)");
         }
         PrintWriter pw = null;
         try {
@@ -695,7 +714,8 @@ public class KmerGutsJava {
         }
     }
     
-    private static File mergeQueryKmerFiles(List<File> files, File tempDir, long numSig) throws Exception {
+    private static File mergeQueryKmerFiles(List<File> files, File tempDir, 
+            long numSig) throws Exception {
         Queue<File> filesForProcessing = new LinkedList<File>(files);
         while (filesForProcessing.size() > 1) {
             Queue<File> filesForProcessingNext = new LinkedList<File>();
@@ -721,7 +741,11 @@ public class KmerGutsJava {
     
     public void run(File kmerTableDir, File queryFastaFile, final PrintWriter pw,
             final boolean stdout) throws Exception {
-        final File tempDir = new File(".");
+        if (tempDirPath == null) {
+            tempDirPath = ".";
+        }
+        final File tempDir = new File(tempDirPath);
+        printInfoLine("Temp. directory: " + tempDir.getCanonicalPath(), pw, stdout);
         File kmerTableFile = new File(kmerTableDir, "kmer.table.mem_map");
         File kmerTableGzFile = new File(kmerTableDir, kmerTableFile.getName() + ".gz");
         if (kmerTableGzFile.exists()) {
@@ -767,7 +791,8 @@ public class KmerGutsJava {
                 inputBr.close();
             }
         }
-        printInfoLine("Preparation time: " + (System.currentTimeMillis() - t1) + " ms.", pw, stdout);
+        printInfoLine("Preparation time: " + (System.currentTimeMillis() - t1) + " ms.", pw, 
+                stdout);
         long t2 = System.currentTimeMillis();
         try {
             lookup(kmerTableStream, header, kmerStorage, hits, pw, stdout);
@@ -807,6 +832,9 @@ public class KmerGutsJava {
                 if (queryKmers.size() >= inputSizeLimit) {
                     // Let's update hash-codes of kmers and sort queries by hash-codes:
                     updateHashCodeAndSort(queryKmers, header.numSigs);
+                    if (!tempDir.exists()) {
+                        tempDir.mkdirs();
+                    }
                     File tempFile = new File(tempDir, "query_kmers_" + queryFiles.size() + ".dat");
                     dumpQueryKmersToFile(queryKmers, tempFile);
                     queryFiles.add(tempFile);
